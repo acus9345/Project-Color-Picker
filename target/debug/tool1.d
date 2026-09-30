@@ -1,0 +1,1 @@
+C:\Users\User\RustroverProjects\ProjectColorPicker\target\debug\tool1.exe: C:\Users\User\RustroverProjects\ProjectColorPicker\assets\icon.png C:\Users\User\RustroverProjects\ProjectColorPicker\src\main.rs
