@@ -1933,7 +1933,6 @@ mod screen {
         bmi_header: BitmapInfoHeader,
         bmi_colors: [u32; 1],
     }
-
     #[link(name = "user32")]
     unsafe extern "system" {
         fn GetCursorPos(lp_point: *mut Point) -> i32;
@@ -2038,6 +2037,60 @@ mod screen {
             value: *mut c_void,
             size: u32,
         ) -> i32;
+    }
+
+    // ----- taskbar / window icon (WM_SETICON) -----
+    const WM_SETICON: u32 = 0x0080;
+    const ICON_SMALL: usize = 0;
+    const ICON_BIG: usize = 1;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        // plain CreateIcon: this API has no A/W variants (no string params),
+        // so "CreateIconW" doesn't exist in user32.lib
+        fn CreateIcon(
+            instance: *mut c_void,
+            width: i32,
+            height: i32,
+            planes: u8,
+            bits_pixel: u8,
+            and_bits: *const u8,
+            xor_bits: *const u8,
+        ) -> *mut c_void;
+        fn SendMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize;
+    }
+
+    fn make_hicon(size: u32) -> *mut c_void {
+        let png = include_bytes!("../assets/icon.png");
+        let img = image::load_from_memory(png).expect("icon").to_rgba8();
+        let img = image::imageops::resize(&img, size, size, image::imageops::FilterType::Lanczos3);
+        let (w, h) = (img.width() as i32, img.height() as i32);
+
+        let mut color: Vec<u8> = Vec::with_capacity((w * h * 4) as usize);
+        for px in img.pixels() {
+            color.extend_from_slice(&[px[2], px[1], px[0], px[3]]); // BGRA
+        }
+        let stride = ((w as usize + 15) / 16) * 2;
+        let mask = vec![0u8; stride * h as usize]; // 0 = opaque, alpha decides
+
+        unsafe {
+            CreateIcon(std::ptr::null_mut(), w, h, 1, 32, mask.as_ptr(), color.as_ptr())
+        }
+    }
+
+    /// The taskbar/alt-tab read ICON_BIG, the title bar ICON_SMALL — set both.
+    pub fn set_window_icons() -> bool {
+        unsafe {
+            let hwnd = find_hwnd();
+            if hwnd.is_null() { return false; }
+            for (kind, size) in [(ICON_SMALL, 16u32), (ICON_BIG, 32u32)] {
+                let hicon = make_hicon(size);
+                if !hicon.is_null() {
+                    SendMessageW(hwnd, WM_SETICON, kind, hicon as isize);
+                }
+            }
+            true
+        }
     }
 
     static SWALLOW: AtomicBool = AtomicBool::new(false);
@@ -2671,6 +2724,7 @@ mod screen {
     pub fn start_pick() {}
     pub fn stop_pick() {}
     pub fn take_click() -> Option<(i32, i32)> { None }
+    pub fn set_window_icons() -> bool { true }
     pub fn apply_win11_style(_caption_bgr: u32) -> bool { true }
     pub fn dpi_scale() -> f32 { 1.0 }
     pub fn set_topmost(_on: bool) {}
@@ -2764,8 +2818,7 @@ impl Picker {
             keep_xyz: false,
             keep_xyy: false,
             keep_munsell: false,
-            keep_hsv: false,
-        };
+            keep_hsv: false, };
         let (r, g, b) = hsv_to_rgb_f(p.hue, p.sat, p.val);
         p.refresh_derived(r, g, b);
         p
@@ -3036,6 +3089,7 @@ async fn main() {
 
     let mut styled = screen::apply_win11_style(TITLE_CAPTION_BGR);
     let mut framed = false;
+    let mut iconed = screen::set_window_icons();
     let lab_img = Texture2D::from_rgba8(LAB_TEX_W, LAB_TEX_H, &lab_diagram_bytes(LAB_TEX_W, LAB_TEX_H));
     lab_img.set_filter(FilterMode::Linear);
 
@@ -3094,6 +3148,9 @@ async fn main() {
                 WINDOW_H as i32,
                 (TITLE_BTN_W * 3.0) as i32,
             );
+        }
+        if !iconed {
+            iconed = screen::set_window_icons();
         }
         let (sw, sh) = (screen_width(), screen_height());
         screen::frame_tick(TITLE_BAR_H as i32, sh as i32);

@@ -6,6 +6,9 @@ edition = "2024"
 [dependencies]
 macroquad = "0.4"
 image = "0.24.9"
+[build-dependencies]
+winresource = "0.1"
+
 [profile.dev]
 opt-level = 1
 
