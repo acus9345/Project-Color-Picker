@@ -3353,7 +3353,8 @@ async fn main() {
                         let rgb = yuv_to_rgb(y, u, v);
                         picker.keep_plane = true;
                         picker.keep_yuv = true; // u,v are the dragged point
-                        picker.plane_pos = ((m.x - sv.x) / sv.w, 1.0 - (m.y - sv.y) / sv.h);
+                        picker.plane_pos = (clamp01((m.x - sv.x) / sv.w),
+                                            clamp01(1.0 - (m.y - sv.y) / sv.h));
                         picker.yuv.1 = u;
                         picker.yuv.2 = v;
                         picker.sync_rgb_f(rgb.0.clamp(0.0, 1.0), rgb.1.clamp(0.0, 1.0),
@@ -3366,7 +3367,8 @@ async fn main() {
                         let rgb = ypbpr_to_rgb(y, pb, pr);
                         picker.keep_plane = true;
                         picker.keep_ypbpr = true; // pb,pr are the dragged point
-                        picker.plane_pos = ((m.x - sv.x) / sv.w, 1.0 - (m.y - sv.y) / sv.h);
+                        picker.plane_pos = (clamp01((m.x - sv.x) / sv.w),
+                                            clamp01(1.0 - (m.y - sv.y) / sv.h));
                         picker.ypbpr.1 = pb;
                         picker.ypbpr.2 = pr;
                         picker.sync_rgb_f(rgb.0.clamp(0.0, 1.0), rgb.1.clamp(0.0, 1.0),
