@@ -37,15 +37,14 @@ fn conf() -> Conf {
 }
 // ----- theme -----
 const BG: Color = Color::from_rgba(30, 30, 28, 255);
-const SURFACE: Color = Color::from_rgba(41, 41, 38, 255);
-const SURFACE_HI: Color = Color::from_rgba(54, 54, 50, 255);
+const SURFACE: Color = Color::from_rgba(44, 44, 41, 255);
+const SURFACE_HI: Color = Color::from_rgba(58, 58, 54, 255);
 const POPOVER: Color = Color::from_rgba(38, 38, 35, 255);
-const STROKE: Color = Color::new(1.0, 1.0, 1.0, 0.07);
-const STROKE_HI: Color = Color::new(1.0, 1.0, 1.0, 0.16);
-const TEXT: Color = Color::from_rgba(224, 224, 219, 255);
-const TEXT_DIM: Color = Color::from_rgba(138, 138, 131, 255);
-const ACCENT: Color = Color::from_rgba(245, 245, 240, 255);
-const DANGER: Color = Color::from_rgba(255, 110, 96, 255);
+const STROKE: Color = Color::new(1.0, 1.0, 1.0, 0.08);
+const STROKE_HI: Color = Color::new(1.0, 1.0, 1.0, 0.15);
+const TEXT: Color = Color::from_rgba(236, 236, 238, 255);
+const TEXT_DIM: Color = Color::from_rgba(142, 142, 147, 255);
+const DANGER: Color = Color::from_rgba(255, 105, 97, 255);
 
 // ----- custom title bar -----
 const TITLE_TEXT: &str = "Project Color Picker";
@@ -80,14 +79,6 @@ fn lab_img_v(y:f64)-> f32 {
     ((y- LAB_IMG_Y_MIN) /(LAB_IMG_Y_MAX - LAB_IMG_Y_MIN)).clamp(0.0, 1.0) as f32
 }
 
-
-fn fit_rect(bounds: Rect,w: f32, h: f32)-> Rect {
-    let s = (bounds.w/w).min(bounds.h/h);
-    Rect::new(
-        bounds.x+(bounds.w-w*s)*0.5,
-        bounds.y+(bounds.h-h*s)*0.5,
-        w*s,
-        h*s, ) }
 
 fn clamp01(v:f32) -> f32 {
     v.clamp(0.0,1.0) }
@@ -228,9 +219,7 @@ fn diagram_rgb(x:f64, y:f64)->(u8, u8, u8) {
 }
 
 
-const LAB_GRID_RGB: (u8,u8,u8) =(62,62,62);
-
-
+/// The filled horseshoe, transparent outside the locus.
 fn lab_diagram_bytes(w: u16, h: u16) -> Vec<u8> {
     let (w, h) = (w as u32, h as u32);
     let dx =(LAB_IMG_X_MAX - LAB_IMG_X_MIN)/ w as f64;
@@ -242,20 +231,35 @@ fn lab_diagram_bytes(w: u16, h: u16) -> Vec<u8> {
             let x =LAB_IMG_X_MIN
                 + ((col as f64 + 0.5) / w as f64) *(LAB_IMG_X_MAX -LAB_IMG_X_MIN);
             let mut c = diagram_rgb(x, y);
+            // one extra ring of pixels just outside, so the outline has color under it
             if c == (0, 0, 0)
                 && (in_locus_hull(x + dx, y)
                     || in_locus_hull(x - dx, y)
                     || in_locus_hull(x, y + dy)
                     || in_locus_hull(x, y - dy))
             { c = diagram_rgb(x + (0.3127 - x) * 0.02, y + (0.3290 - y) * 0.02, ); }
-            if c == (0, 0, 0) && (on_grid(x, dx * 0.5) || on_grid(y, dy * 0.5)) {
-                c = LAB_GRID_RGB; }
-            out.extend_from_slice(&[c.0, c.1, c.2, 255]); } }
+            let a = if c == (0, 0, 0) { 0 } else { 255 };
+            out.extend_from_slice(&[c.0, c.1, c.2, a]); } }
     out }
 
-fn on_grid(v:f64,half_px:f64)->bool {
-    let nearest = (v/0.1).round() * 0.1;
-    (v -nearest).abs() <=half_px}
+/// Axis range the CIE plot shows; a little wider than the locus so the
+/// wavelength labels fit between it and the axes.
+const CIE_X0: f64 = -0.07;
+const CIE_X1: f64 = 0.78;
+const CIE_Y1: f64 = 0.88;
+
+/// Where the horseshoe texture goes inside the plane square `sv`.
+fn cie_rect(sv: Rect) -> Rect {
+    let unit = (sv.h - 26.0) / CIE_Y1 as f32; // design units per 1.0 of x or y
+    let frame_x = sv.x + 26.0;
+    let frame_y = sv.y + 8.0;
+    Rect::new(
+        frame_x + (LAB_IMG_X_MIN - CIE_X0) as f32 * unit,
+        frame_y + (CIE_Y1 - LAB_IMG_Y_MAX) as f32 * unit,
+        (LAB_IMG_X_MAX - LAB_IMG_X_MIN) as f32 * unit,
+        (LAB_IMG_Y_MAX - LAB_IMG_Y_MIN) as f32 * unit,
+    )
+}
 
 // ------- color space conversions ----------
 
@@ -415,23 +419,30 @@ fn rgb_to_oklch(r: f32, g: f32, b: f32) -> (f64, f64, f64) {
     (L, c, h)
 }
 
-fn oklch_to_rgb(L: f64, c: f64, h: f64) -> (f32, f32, f32) {
+/// OKLCH to linear sRGB, not clamped: channels outside 0..1 mean the color
+/// can't be shown.
+fn oklch_to_linear(lightness: f64, c: f64, h: f64) -> (f64, f64, f64) {
     let hr = h.to_radians();
     let a = c * hr.cos();
     let bb = c * hr.sin();
 
-    let l_ = L + 0.3963377774 * a + 0.2158037573 * bb;
-    let m_ = L - 0.1055613458 * a - 0.0638541728 * bb;
-    let s_ = L - 0.0894841775 * a - 1.2914855480 * bb;
+    let l_ = lightness + 0.3963377774 * a + 0.2158037573 * bb;
+    let m_ = lightness - 0.1055613458 * a - 0.0638541728 * bb;
+    let s_ = lightness - 0.0894841775 * a - 1.2914855480 * bb;
 
     let l = l_ * l_ * l_;
     let m = m_ * m_ * m_;
     let s = s_ * s_ * s_;
 
-    let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
-    let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
-    let b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+    (
+        4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+    )
+}
 
+fn oklch_to_rgb(lightness: f64, c: f64, h: f64) -> (f32, f32, f32) {
+    let (r, g, b) = oklch_to_linear(lightness, c, h);
     (
         linear_to_srgb(r.clamp(0.0, 1.0)) as f32,
         linear_to_srgb(g.clamp(0.0, 1.0)) as f32,
@@ -1425,12 +1436,16 @@ fn exe_dir()-> std::path::PathBuf{
 fn swatch_path() -> std::path::PathBuf {
     exe_dir().join("palette.txt") }
 
-fn load_swatches() ->[Option<(u8, u8, u8, u8)>; 8] {
-    let mut out = [None; 8];
+/// How many colors can be saved, and how many of them show at once.
+const SWATCH_SLOTS: usize = 100;
+const SWATCH_SHOWN: usize = 8;
+
+fn load_swatches() ->[Option<(u8, u8, u8, u8)>; SWATCH_SLOTS] {
+    let mut out = [None; SWATCH_SLOTS];
     let Ok(text) = std::fs::read_to_string(swatch_path()) else {
         return out;
     };
-    for (i, line) in text.lines().take(8).enumerate() {
+    for (i, line) in text.lines().take(SWATCH_SLOTS).enumerate() {
         if let Some((r, g, b, a)) = parse_rgba(line) {
             out[i] = Some((r, g, b, a.unwrap_or(255)));
         }
@@ -1438,7 +1453,7 @@ fn load_swatches() ->[Option<(u8, u8, u8, u8)>; 8] {
     out
 }
 
-fn save_swatches(sw: &[Option<(u8, u8, u8, u8)>; 8]) {
+fn save_swatches(sw: &[Option<(u8, u8, u8, u8)>; SWATCH_SLOTS]) {
     let mut s = String::new();
     for slot in sw {
         match slot {
@@ -1459,6 +1474,7 @@ struct Saved {
     mode: ColorMode,
     rgba: (u8, u8, u8, u8),
     on_top: bool,
+    dim: bool,
 }
 
 fn load_state() -> Option<Saved> {
@@ -1468,15 +1484,16 @@ fn load_state() -> Option<Saved> {
     let mode = MODES.iter().copied().find(|m| mode_name(*m) == name)?;
     let (r, g, b, a) = parse_rgba(lines.next()?)?;
     let on_top = lines.next().is_some_and(|l| l.trim() == "1");
-    Some(Saved { mode, rgba: (r, g, b, a.unwrap_or(255)), on_top })
+    let dim = lines.next().is_some_and(|l| l.trim() == "1");
+    Some(Saved { mode, rgba: (r, g, b, a.unwrap_or(255)), on_top, dim })
 }
 
 fn save_state(s: &Saved) {
     let (r, g, b, a) = s.rgba;
-    let text = format!("{}
-{}, {}, {}, {}
-{}
-", mode_name(s.mode), r, g, b, a, s.on_top as u8);
+    let text = format!(
+        "{}\n{}, {}, {}, {}\n{}\n{}\n",
+        mode_name(s.mode), r, g, b, a, s.on_top as u8, s.dim as u8,
+    );
     let _ = std::fs::write(state_path(), text);
 }
 
@@ -1508,7 +1525,7 @@ fn strip_texture(rows: impl Iterator<Item = [u8; 4]>) -> Texture2D {
 
 fn hue_strip_texture() -> Texture2D {
     strip_texture((0..256).map(|y| {
-        let (r, g, b) = hsv_to_rgb(y as f32 / 255.0 * 360.0, 1.0, 1.0);
+        let (r, g, b) = hsv_to_rgb((1.0 - y as f32 / 255.0) * 360.0, 0.8, 1.0);
         [r, g, b, 255]
     }))
 }
@@ -1593,26 +1610,58 @@ fn hwb_square_bytes(hue: f32) -> Vec<u8> {
     for row in 0..h {
         let bl = row as f32 / h as f32;
         for col in 0..w {
-            let p = hwb_to_rgb(hue, col as f32 / w as f32, bl);
-            b.extend_from_slice(&[q8(p.0), q8(p.1), q8(p.2), 255]);
+            let wh = col as f32 / w as f32;
+            let p = hwb_to_rgb(hue, wh, bl);
+            // past the diagonal (W + B > 100%) every point is just a gray: dim it
+            b.extend_from_slice(&gamut_px(p.0, p.1, p.2, wh + bl <= 1.0));
         }
     }
     b
 }
 
 
+/// OKLCH: x = chroma (0..OK_CHROMA_MAX), y = hue (top = 360), at lightness l.
 fn oklch_square_bytes(l: f32) -> Vec<u8> {
     let (w, h) = (260usize, 260usize);
+    let l = l.clamp(0.0, 1.0) as f64;
     let mut b = Vec::with_capacity(w * h * 4);
     for row in 0..h {
-        let hue = (1.0 - row as f32 / h as f32) * 360.0;
+        let hue = ((1.0 - row as f32 / h as f32) * 360.0) as f64;
         for col in 0..w {
             let c = (col as f32 / w as f32 * OK_CHROMA_MAX) as f64;
-            let p = oklch_to_rgb(l.clamp(0.0, 1.0) as f64, c, hue as f64);
-            b.extend_from_slice(&[q8(p.0), q8(p.1), q8(p.2), 255]);
+            let lin = oklch_to_linear(l, c, hue);
+            let ok = lin.0.min(lin.1).min(lin.2) >= -0.002 && lin.0.max(lin.1).max(lin.2) <= 1.002;
+            let p = oklch_to_rgb(l, c, hue);
+            b.extend_from_slice(&gamut_px(p.0, p.1, p.2, ok));
         }
     }
     b
+}
+
+/// Whether planes dim the points RGB can't show (the title bar toggle; off by default).
+static DIM_PLANES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn dim_planes() -> bool {
+    DIM_PLANES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A plane pixel for an (already clamped) color. Points outside what RGB can
+/// show are dimmed toward the panel color, so the displayable region stands
+/// out as a shape.
+fn gamut_px(r: f32, g: f32, b: f32, displayable: bool) -> [u8; 4] {
+    if displayable || !dim_planes() {
+        [q8(r), q8(g), q8(b), 255]
+    } else {
+        let dim = |c: f32| q8(0.08 + (c - 0.08) * 0.22);
+        [dim(r), dim(g), dim(b), 255]
+    }
+}
+
+/// One pixel of a YUV / YPbPr plane, from the unclamped conversion result.
+fn chroma_plane_px(p: (f32, f32, f32)) -> [u8; 4] {
+    let lo = p.0.min(p.1).min(p.2);
+    let hi = p.0.max(p.1).max(p.2);
+    gamut_px(p.0.clamp(0.0, 1.0), p.1.clamp(0.0, 1.0), p.2.clamp(0.0, 1.0), lo >= -0.003 && hi <= 1.003)
 }
 
 /// YUV: x = U (-0.436..0.436), y = V (-0.615..0.615, top = +0.615), at Y.
@@ -1624,8 +1673,7 @@ fn yuv_square_bytes(y: f32) -> Vec<u8> {
         for col in 0..w {
             let u = col as f32 / w as f32 * 0.872 - 0.436;
             let p = yuv_to_rgb(y.clamp(0.0, 1.0), u, v);
-            b.extend_from_slice(&[q8(p.0.clamp(0.0, 1.0)), q8(p.1.clamp(0.0, 1.0)),
-                                  q8(p.2.clamp(0.0, 1.0)), 255]);
+            b.extend_from_slice(&chroma_plane_px(p));
         }
     }
     b
@@ -1640,27 +1688,31 @@ fn ypbpr_square_bytes(y: f32) -> Vec<u8> {
         for col in 0..w {
             let pb = col as f32 / w as f32 - 0.5;
             let p = ypbpr_to_rgb(y.clamp(0.0, 1.0), pb, pr);
-            b.extend_from_slice(&[q8(p.0.clamp(0.0, 1.0)), q8(p.1.clamp(0.0, 1.0)),
-                                  q8(p.2.clamp(0.0, 1.0)), 255]);
+            b.extend_from_slice(&chroma_plane_px(p));
         }
     }
     b
 }
 
-/// Munsell hue wheel: the angle around the center is the Munsell hue
-/// H 0..100 (clockwise from 12 o'clock, like an HSV wheel), colored at the
-/// current value V and chroma C. Transparent outside the disc.
+/// Munsell hue ring radii, as fractions of the plane's half-width.
+const MUNSELL_R_OUT: f32 = 0.845;
+const MUNSELL_R_IN: f32 = 0.60;
+const MUNSELL_FAMILIES: [&str; 10] = ["R", "YR", "Y", "GY", "G", "BG", "B", "PB", "P", "RP"];
+
+/// Munsell hue ring: the angle around the center is the Munsell hue
+/// H 0..100 (clockwise from 12 o'clock), colored at the current value V and
+/// chroma C. Transparent inside and outside the ring.
 fn munsell_wheel_bytes(v: f32, c: f32) -> Vec<u8> {
     let (w, h) = (260usize, 260usize);
-    let (cx, cy) = (129.5f32, 129.5f32);
-    let r_max = 126.0f32;
+    let (cx, cy) = (130.0f32, 130.0f32);
+    let (r_out, r_in) = (130.0 * MUNSELL_R_OUT, 130.0 * MUNSELL_R_IN);
     let mut b = Vec::with_capacity(w * h * 4);
     for row in 0..h {
         for col in 0..w {
             let dx = col as f32 + 0.5 - cx;
             let dy = row as f32 + 0.5 - cy;
             let d = dx.hypot(dy);
-            let a = (0.5 - (d - r_max)).clamp(0.0, 1.0); // ~1px AA edge
+            let a = (0.5 - (d - r_out)).clamp(0.0, 1.0) * (0.5 + (d - r_in)).clamp(0.0, 1.0); // ~1px AA edges
             if a <= 0.0 {
                 b.extend_from_slice(&[0, 0, 0, 0]);
                 continue;
@@ -1671,6 +1723,19 @@ fn munsell_wheel_bytes(v: f32, c: f32) -> Vec<u8> {
         }
     }
     b
+}
+
+/// Munsell-style notation for the app's H/V/C, e.g. "2.5G 7.1/13".
+fn munsell_notation(h: f32, v: f32, c: f32) -> (String, String) {
+    let h = h.rem_euclid(100.0);
+    let mut family = (h / 10.0) as usize % 10;
+    let mut step = h % 10.0;
+    if step < 0.05 {
+        // hue 0 of a family is written as 10 of the one before it
+        step = 10.0;
+        family = (family + 9) % 10;
+    }
+    (format!("{:.1}{}", step, MUNSELL_FAMILIES[family]), format!("{:.1} / {:.1}", v, c))
 }
 
 #[cfg(target_os = "windows")]
@@ -2671,6 +2736,7 @@ enum Widget {
     Hue,
     Alpha,
     Chan(usize),
+    SwatchScroll,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -2983,6 +3049,13 @@ impl Ui {
         });
     }
 
+    /// Restrict drawing to `r`, or lift the restriction with `None`.
+    fn clip(&self, r: Option<Rect>) {
+        let px = |v: f32| (v * self.px).round() as i32;
+        let gl = unsafe { get_internal_gl() };
+        gl.quad_gl.scissor(r.map(|r| (px(r.x), px(r.y), px(r.w), px(r.h))));
+    }
+
     /// Round a design-space coordinate to the physical pixel grid.
     fn snap(&self, v: f32) -> f32 {
         (v * self.px).round() / self.px
@@ -3041,16 +3114,13 @@ impl Ui {
         self.shape(r, Shape { radius, checker: cell, ..Default::default() }, color);
     }
 
-    /// A gradient strip as a pill. The gradient spans the thumb's travel (the
-    /// pill minus its round caps), so the color under the thumb is exact.
+    /// A gradient track with fully rounded ends. The gradient spans the
+    /// thumb's travel (GRIP_HALF in from each end), so the color under the
+    /// thumb is exact and the thumb never sticks out past the track.
     fn strip(&self, r: Rect, tex: &Texture2D, checker: f32, tint: Color) {
-        let cap = r.w.min(r.h) * 0.5;
-        let inset = if r.w >= r.h { vec2(cap / r.w, 0.0) } else { vec2(0.0, cap / r.h) };
-        self.shape(r, Shape { radius: cap, tex: Some(tex), inset, checker, ..Default::default() }, tint);
-    }
-
-    fn disc(&self, c: Vec2, radius: f32, color: Color) {
-        self.fill(Rect::new(c.x - radius, c.y - radius, radius * 2.0, radius * 2.0), radius, color);
+        let radius = r.w.min(r.h) * 0.5;
+        let inset = if r.w >= r.h { vec2(GRIP_HALF / r.w, 0.0) } else { vec2(0.0, GRIP_HALF / r.h) };
+        self.shape(r, Shape { radius, tex: Some(tex), checker, inset, ..Default::default() }, tint);
     }
 
     fn ring(&self, c: Vec2, radius: f32, width: f32, color: Color) {
@@ -3075,10 +3145,25 @@ impl Ui {
         draw_rectangle(self.snap(x), self.snap(y), w.max(one), h.max(one), color);
     }
 
-    fn thumb(&self, c: Vec2, radius: f32, fill: Color) {
-        self.disc(c, radius + 1.0, Color::new(0.0, 0.0, 0.0, 0.28));
-        self.disc(c, radius, WHITE);
-        self.disc(c, radius - 1.5, fill);
+    /// The plane's cursor: an open ring, so the color under it stays visible.
+    fn reticle(&self, c: Vec2, radius: f32) {
+        self.ring(c, radius + 0.75, 2.75, Color::new(0.0, 0.0, 0.0, 0.45));
+        self.ring(c, radius, 1.25, WHITE);
+    }
+
+    /// Slider handle: a white frame laid across the track, filled with the
+    /// color the track has at that point.
+    fn marker(&self, c: Vec2, w: f32, h: f32, fill: Color) {
+        let centered = |w: f32, h: f32| Rect::new(c.x - w * 0.5, c.y - h * 0.5, w, h);
+        self.fill(centered(w + 2.0, h + 2.0), 2.5, Color::new(0.0, 0.0, 0.0, 0.6));
+        self.fill(centered(w, h), 1.5, WHITE);
+        self.checker(centered(w - 2.6, h - 2.6), 0.5, 2.0, fill);
+    }
+
+    /// Sunken input box.
+    fn field(&self, r: Rect, fill: Color, edge: Color) {
+        self.fill(r, 5.0, fill);
+        self.hair(r, 5.0, edge);
     }
 
     fn face(&self, bold: bool) -> Option<&Font> {
@@ -3100,8 +3185,11 @@ impl Ui {
     /// Text vertically centered on `cy`; `align` 0 = starts at x, 0.5 =
     /// centered on x, 1 = ends at x.
     fn label(&self, s: &str, x: f32, cy: f32, size: f32, bold: bool, color: Color, align: f32) {
+        self.text(self.face(bold), s, x, cy, size, color, align);
+    }
+
+    fn text(&self, font: Option<&Font>, s: &str, x: f32, cy: f32, size: f32, color: Color, align: f32) {
         let (fs, k) = self.raster(size);
-        let font = self.face(bold);
         let x = if align > 0.0 { x - measure_text(s, font, fs, k).width * align } else { x };
         draw_text_ex(s, self.snap(x), self.snap(cy + size * 0.36), TextParams {
             font,
@@ -3112,8 +3200,9 @@ impl Ui {
         });
     }
 
+    /// Primary button: solid white, like Photon's OK.
     fn button(&self, r: Rect, hot: bool) {
-        self.fill(r, 4.0, if hot { SURFACE_HI } else { SURFACE });
+        self.fill(r, 5.0, if hot { WHITE } else { Color::from_rgba(226, 226, 229, 255) });
     }
 
     // ----- icons (drawn, so they scale with everything else) -----
@@ -3130,14 +3219,6 @@ impl Ui {
         let mid = c + vec2(-1.5, 3.5);
         self.line(c + vec2(-5.0, 0.0), mid, 1.6, color);
         self.line(mid, c + vec2(5.0, -3.5), 1.6, color);
-    }
-
-    fn icon_target(&self, c: Vec2, color: Color) {
-        self.ring(c, 4.5, 1.3, color);
-        self.disc(c, 1.2, color);
-        for d in [vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0)] {
-            self.line(c + d * 4.5, c + d * 7.0, 1.3, color);
-        }
     }
 
     fn icon_chevron(&self, c: Vec2, up: bool, color: Color) {
@@ -3192,6 +3273,9 @@ fn apply_text(mode: ColorMode, s: &str, p: &mut Picker) -> bool {
     }
 }
 
+/// Half the thickness of a slider thumb along its track.
+const GRIP_HALF: f32 = 2.75;
+
 /// How far one mouse-wheel notch moves a channel slider (in 0..1).
 fn chan_step(mode: ColorMode, label: &str) -> f32 {
     match (mode, label) {
@@ -3202,92 +3286,197 @@ fn chan_step(mode: ColorMode, label: &str) -> f32 {
 }
 
 fn draw_slider(ui: &Ui, bar: Rect, label_x: f32, value_x: f32, ch: &ChanUi, grad: &Texture2D, hot: bool) {
-    let r = bar.h * 0.5;
-    let cy = bar.y + r;
-    ui.label(ch.label, label_x, cy, 12.0, true, TEXT_DIM, 0.0);
-    if ui.font.is_some() {
-        ui.label(&ch.value.replace("deg", "\u{b0}"), value_x, cy, 12.0, false, TEXT, 1.0);
-    } else {
-        ui.label(&ch.value, value_x, cy, 12.0, false, TEXT, 1.0);
-    }
-    ui.strip(bar, grad, if ch.label == "A" { 3.0 } else { 0.0 }, WHITE);
-    let cx = bar.x + r + clamp01(ch.t) * (bar.w - 2.0 * r);
-    ui.thumb(vec2(cx, cy), if hot { 8.0 } else { 7.0 }, ch.handle);
+    let cy = bar.y + bar.h * 0.5;
+    ui.label(ch.label, label_x, cy, 11.5, false, TEXT_DIM, 0.0);
+    ui.strip(bar, grad, if ch.label == "A" { 4.0 } else { 0.0 }, WHITE);
+    ui.marker(vec2(bar.x + GRIP_HALF + clamp01(ch.t) * (bar.w - GRIP_HALF * 2.0), cy), GRIP_HALF * 2.0, bar.h + if hot { 10.0 } else { 8.0 }, ch.handle);
+    let value_box = Rect::new(value_x - 54.0, cy - 10.0, 54.0, 20.0);
+    ui.field(value_box, SURFACE, STROKE);
+    // the unit sits dimmed after the number, as in Photon's value boxes
+    let (number, unit) = match ch.value.strip_suffix('%') {
+        Some(n) => (n, "%"),
+        None => match ch.value.strip_suffix("deg") {
+            Some(n) => (n, if ui.font.is_some() { "\u{b0}" } else { "d" }),
+            None => (ch.value.as_str(), ""),
+        },
+    };
+    let unit_w = if unit.is_empty() { 0.0 } else { ui.width(unit, 11.0, false) + 2.0 };
+    ui.label(unit, value_x - 6.0, cy, 11.0, false, TEXT_DIM, 1.0);
+    ui.label(number, value_x - 6.0 - unit_w, cy, 11.0, false, TEXT, 1.0);
 }
 
-fn draw_lab_reference(ui: &Ui, r: Rect) {
+/// The CIE 1931 xy plot: grid and axes, the horseshoe `img` placed at `r`,
+/// its outline with wavelength ticks, and the sRGB gamut with its white point.
+fn draw_cie(ui: &Ui, r: Rect, img: &Texture2D) {
     let to_screen = |x: f64, y: f64| vec2(
-        r.x + lab_img_u(x) * r.w,
-        r.y + (1.0 - lab_img_v(y)) * r.h,
+        r.x + ((x - LAB_IMG_X_MIN) / (LAB_IMG_X_MAX - LAB_IMG_X_MIN)) as f32 * r.w,
+        r.y + (1.0 - (y - LAB_IMG_Y_MIN) / (LAB_IMG_Y_MAX - LAB_IMG_Y_MIN)) as f32 * r.h,
     );
+    let top_left = to_screen(CIE_X0, CIE_Y1);
+    let bottom_right = to_screen(CIE_X1, 0.0);
+    let frame = Rect::new(top_left.x, top_left.y, bottom_right.x - top_left.x, bottom_right.y - top_left.y);
 
-    let axis = Color::new(1.0, 1.0, 1.0, 0.45);
-    let tick_txt = Color::new(1.0, 1.0, 1.0, 0.70);
-    ui.hairline(r.x, r.y + r.h, r.w, 0.0, axis);
-    ui.hairline(r.x, r.y, 0.0, r.h, axis);
-    for i in 1..8 {
-        let gx = 0.1 * i as f64;
-        if gx > LAB_IMG_X_MIN && gx < LAB_IMG_X_MAX {
-            let lx = r.x + lab_img_u(gx) * r.w;
-            ui.hairline(lx, r.y + r.h, 0.0, 3.0, axis);
-            ui.label(&format!("{:.1}", gx), lx, r.y + r.h + 9.0, 8.5, false, tick_txt, 0.5);
+    // grid every 0.1, axes on the left and bottom
+    let grid = Color::new(1.0, 1.0, 1.0, 0.055);
+    let axis = Color::new(1.0, 1.0, 1.0, 0.22);
+    for i in 0..=8 {
+        let v = 0.1 * i as f64;
+        if i <= 7 {
+            let gx = to_screen(v, 0.0).x;
+            ui.hairline(gx, frame.y, 0.0, frame.h, grid);
+            ui.label(&format!("{:.1}", v), gx, frame.y + frame.h + 8.0, 8.5, false, TEXT_DIM, 0.5);
         }
+        let gy = to_screen(0.0, v).y;
+        ui.hairline(frame.x, gy, frame.w, 0.0, grid);
+        ui.label(&format!("{:.1}", v), frame.x - 5.0, gy, 8.5, false, TEXT_DIM, 1.0);
     }
-    for i in 1..9 {
-        let gy = 0.1 * i as f64;
-        if gy > LAB_IMG_Y_MIN && gy < LAB_IMG_Y_MAX {
-            let ly = r.y + (1.0 - lab_img_v(gy)) * r.h;
-            ui.hairline(r.x - 3.0, ly, 3.0, 0.0, axis);
-            ui.label(&format!("{:.1}", gy), r.x - 5.0, ly, 8.5, false, tick_txt, 1.0);
-        }
-    }
+    ui.hairline(frame.x, frame.y, 0.0, frame.h, axis);
+    ui.hairline(frame.x, frame.y + frame.h, frame.w, 0.0, axis);
+    ui.label("y", frame.x + 6.0, frame.y + 6.0, 9.5, true, TEXT_DIM, 0.0);
+    ui.label("x", frame.x + frame.w - 5.0, frame.y + frame.h - 8.0, 9.5, true, TEXT_DIM, 1.0);
 
+    ui.tex(r, 0.0, img);
+
+    // spectral locus + line of purples
     let pts: Vec<Vec2> = SPECTRAL_LOCUS
         .iter()
         .map(|p| to_screen(p.1, p.2))
         .collect();
-    let outline = Color::new(1.0, 1.0, 1.0, 0.85);
+    let outline = Color::new(1.0, 1.0, 1.0, 0.9);
     for i in 0..pts.len() {
-        ui.line(pts[i], pts[(i + 1) % pts.len()], 1.0, outline);
+        ui.line(pts[i], pts[(i + 1) % pts.len()], 1.1, outline);
     }
+
+    // wavelength ticks, pointing away from the white point
     let white = to_screen(0.3127, 0.3290);
-    for nm in [470.0f64, 480.0, 520.0, 540.0, 560.0, 580.0, 600.0, 620.0, 700.0] {
+    for nm in [470.0f64, 480.0, 490.0, 500.0, 510.0, 520.0, 540.0, 560.0, 580.0, 600.0, 620.0] {
         let p = match SPECTRAL_LOCUS.iter().find(|p| p.0 == nm) {
             Some(p) => p,
             None => continue,
         };
         let sp = to_screen(p.1, p.2);
-        let lp = sp + (sp - white).normalize_or_zero() * 11.0;
-        ui.label(&format!("{}", nm as i32), lp.x, lp.y, 8.5, false,
-                 Color::new(1.0, 0.55, 0.42, 0.95), 0.5);
+        let out = (sp - white).normalize_or_zero();
+        ui.line(sp, sp + out * 3.5, 1.0, outline);
+        ui.label(&format!("{}", nm as i32), sp.x + out.x * 12.0, sp.y + out.y * 9.5, 8.0, false,
+                 Color::from_rgba(196, 196, 201, 255), 0.5);
     }
+
+    // sRGB gamut and its D65 white point
+    let gamut = [to_screen(0.64, 0.33), to_screen(0.30, 0.60), to_screen(0.15, 0.06)];
+    let edge = Color::new(0.0, 0.0, 0.0, 0.5);
+    for i in 0..3 {
+        ui.line(gamut[i], gamut[(i + 1) % 3], 1.0, edge);
+    }
+    ui.label("sRGB", gamut[1].x + 7.0, gamut[1].y + 15.0, 8.0, true, Color::new(0.0, 0.0, 0.0, 0.6), 0.5);
+    ui.ring(white, 2.5, 1.0, Color::new(0.0, 0.0, 0.0, 0.6));
 }
 
-fn draw_uv_reference(ui: &Ui, sv: Rect, range: f32, u_label: &str, v_label: &str) {
+/// Munsell ring dressing: family ticks and names around it, the notation in the middle.
+fn draw_munsell_reference(ui: &Ui, sv: Rect, hvc: (f32, f32, f32)) {
+    let center = vec2(sv.x + sv.w * 0.5, sv.y + sv.h * 0.5);
+    let half = sv.w * 0.5;
+    let dir = |hue: f32| {
+        let a = (hue * 3.6).to_radians();
+        vec2(a.sin(), -a.cos())
+    };
+    for k in 0..10 {
+        let edge = dir(k as f32 * 10.0);
+        ui.line(center + edge * half * (MUNSELL_R_OUT + 0.012), center + edge * half * (MUNSELL_R_OUT + 0.05),
+                1.0, Color::new(1.0, 1.0, 1.0, 0.35));
+        let mid = center + dir(k as f32 * 10.0 + 5.0) * half * (MUNSELL_R_OUT + 0.085);
+        ui.label(MUNSELL_FAMILIES[k], mid.x, mid.y, 8.5, true, TEXT_DIM, 0.5);
+    }
+    let (hue, value_chroma) = munsell_notation(hvc.0, hvc.1, hvc.2);
+    ui.label(&hue, center.x, center.y - 7.0, 17.0, true, TEXT, 0.5);
+    ui.label(&value_chroma, center.x, center.y + 11.0, 11.0, false, TEXT_DIM, 0.5);
+}
+
+/// Percent grid for the CMYK and HWB planes: a line and a number every 25%
+/// on both axes. `color_at(u, v)` is the plane's color at a point (u across,
+/// v down, both 0..1), used to pick black or white ink for each label.
+fn draw_percent_grid(
+    ui: &Ui, sv: Rect, x_name: &str, y_name: &str, y_grows_down: bool,
+    color_at: impl Fn(f32, f32) -> (f32, f32, f32),
+) {
+    let ink = |u: f32, v: f32, strong: bool| {
+        let (r, g, b) = color_at(u, v);
+        let a = if strong { 1.0 } else { 0.8 };
+        if 0.299 * r + 0.587 * g + 0.114 * b > 0.55 {
+            Color::new(0.0, 0.0, 0.0, a * 0.85)
+        } else {
+            Color::new(1.0, 1.0, 1.0, a)
+        }
+    };
+    let grid = Color::new(0.5, 0.5, 0.5, 0.3);
+    let (edge_u, edge_v) = (6.0 / sv.w, 8.0 / sv.h); // where the labels sit, as plane fractions
+    for k in 1..4 {
+        let t = k as f32 * 0.25;
+        let x = sv.x + t * sv.w;
+        let y = sv.y + t * sv.h;
+        ui.hairline(x, sv.y, 0.0, sv.h, grid);
+        ui.hairline(sv.x, y, sv.w, 0.0, grid);
+        ui.label(&format!("{}", k * 25), x, sv.y + sv.h - 8.0, 8.0, false, ink(t, 1.0 - edge_v, false), 0.5);
+        let y_value = if y_grows_down { k * 25 } else { 100 - k * 25 };
+        ui.label(&format!("{}", y_value), sv.x + 6.0, y - 7.0, 8.0, false, ink(edge_u, t - edge_v, false), 0.0);
+    }
+    ui.label(x_name, sv.x + sv.w - 7.0, sv.y + sv.h - 9.0, 10.0, true, ink(1.0 - edge_u, 1.0 - edge_v, true), 1.0);
+    ui.label(y_name, sv.x + 7.0, sv.y + 10.0, 10.0, true, ink(edge_u, edge_v, true), 0.0);
+}
+
+/// Axes for the OKLCH plane: chroma along the bottom, hue up the side.
+fn draw_oklch_reference(ui: &Ui, sv: Rect) {
+    let grid = Color::new(1.0, 1.0, 1.0, 0.08);
+    let text = Color::new(1.0, 1.0, 1.0, 0.82);
+    for k in 1..=3 {
+        let x = sv.x + (k as f32 * 0.1 / OK_CHROMA_MAX) * sv.w;
+        ui.hairline(x, sv.y, 0.0, sv.h, grid);
+        ui.label(&format!("{:.1}", k as f32 * 0.1), x, sv.y + sv.h - 8.0, 8.0, false, text, 0.5);
+    }
+    for k in 1..6 {
+        let y = sv.y + (1.0 - k as f32 / 6.0) * sv.h;
+        ui.hairline(sv.x, y, sv.w, 0.0, grid);
+        let deg = if ui.font.is_some() { "\u{b0}" } else { "" };
+        ui.label(&format!("{}{}", k * 60, deg), sv.x + 6.0, y - 7.0, 8.0, false, text, 0.0);
+    }
+    ui.label("C", sv.x + sv.w - 7.0, sv.y + sv.h - 9.0, 10.0, true, WHITE, 1.0);
+    ui.label("H", sv.x + 7.0, sv.y + 10.0, 10.0, true, WHITE, 0.0);
+}
+
+/// Axes for the YUV / YPbPr planes: a faint grid every 0.1, the two zero
+/// axes with ticks, and a number every 0.2.
+fn draw_uv_reference(ui: &Ui, sv: Rect, u_range: f32, v_range: f32, u_label: &str, v_label: &str) {
     let cx = sv.x + sv.w * 0.5;
     let cy = sv.y + sv.h * 0.5;
-    let line = Color::new(1.0, 1.0, 1.0, 0.75);
-    ui.hairline(sv.x, cy, sv.w, 0.0, line); // V = 0
-    ui.hairline(cx, sv.y, 0.0, sv.h, line); // U = 0
+    let grid = Color::new(1.0, 1.0, 1.0, 0.07);
+    let axis = Color::new(1.0, 1.0, 1.0, 0.6);
+    let text = Color::new(1.0, 1.0, 1.0, 0.82);
 
-    let step = sv.w * (0.1 / (range * 2.0));
-    let n = (range / 0.1) as i32;
-    let lbl = Color::new(1.0, 1.0, 1.0, 0.9);
-    for k in 1..=n {
-        let d = k as f32 * step;
-        ui.hairline(cx + d, cy - 2.5, 0.0, 5.0, line);
-        ui.hairline(cx - d, cy - 2.5, 0.0, 5.0, line);
-        ui.hairline(cx - 2.5, cy - d, 5.0, 0.0, line);
-        ui.hairline(cx - 2.5, cy + d, 5.0, 0.0, line);
-        let tp = format!("+.{k}");
-        let tm = format!("-.{k}");
-        ui.label(&tp, cx + d, cy + 9.0, 8.0, false, lbl, 0.5);
-        ui.label(&tm, cx - d, cy + 9.0, 8.0, false, lbl, 0.5);
-        ui.label(&tp, cx + 5.0, cy - d, 8.0, false, lbl, 0.0);
-        ui.label(&tm, cx + 5.0, cy + d, 8.0, false, lbl, 0.0);
+    let step_x = sv.w * 0.05 / u_range;
+    let step_y = sv.h * 0.05 / v_range;
+    for k in 1..=(u_range / 0.1) as i32 {
+        for side in [-1.0f32, 1.0] {
+            let x = cx + side * k as f32 * step_x;
+            ui.hairline(x, sv.y, 0.0, sv.h, grid);
+            ui.hairline(x, cy - 2.5, 0.0, 5.0, axis);
+            if k % 2 == 0 {
+                ui.label(&format!("{:+.1}", side * k as f32 * 0.1), x, cy + 9.0, 8.0, false, text, 0.5);
+            }
+        }
     }
-    ui.label(u_label, sv.x + sv.w - 6.0, cy - 8.0, 9.5, true, lbl, 1.0);
-    ui.label(v_label, cx - 6.0, sv.y + 9.0, 9.5, true, lbl, 1.0);
+    for k in 1..=(v_range / 0.1) as i32 {
+        for side in [-1.0f32, 1.0] {
+            let y = cy - side * k as f32 * step_y;
+            ui.hairline(sv.x, y, sv.w, 0.0, grid);
+            ui.hairline(cx - 2.5, y, 5.0, 0.0, axis);
+            if k % 2 == 0 {
+                ui.label(&format!("{:+.1}", side * k as f32 * 0.1), cx + 6.0, y, 8.0, false, text, 0.0);
+            }
+        }
+    }
+    ui.hairline(sv.x, cy, sv.w, 0.0, axis);
+    ui.hairline(cx, sv.y, 0.0, sv.h, axis);
+    ui.label(u_label, sv.x + sv.w - 7.0, cy - 9.0, 10.0, true, WHITE, 1.0);
+    ui.label(v_label, cx - 7.0, sv.y + 10.0, 10.0, true, WHITE, 1.0);
 }
 
 #[macroquad::main(conf)]
@@ -3301,10 +3490,11 @@ async fn main() {
     if let Some(st) = load_state() {
         mode = st.mode;
         on_top = st.on_top;
+        DIM_PLANES.store(st.dim, std::sync::atomic::Ordering::Relaxed);
         picker.sync_hsv(st.rgba.0, st.rgba.1, st.rgba.2);
         picker.alpha = st.rgba.3 as f32 / 255.0;
     }
-    let mut persisted = Saved { mode, rgba: (0, 0, 0, 0), on_top };
+    let mut persisted = Saved { mode, rgba: (0, 0, 0, 0), on_top, dim: dim_planes() };
     let mut top_applied = !on_top;
 
     let mut active: Option<Widget> = None;
@@ -3322,11 +3512,16 @@ async fn main() {
     let mut copied: (u8, f64) = (0, f64::NEG_INFINITY);
 
     let mut dd_open = false;
+    // the color the "current" swatch holds: the one at launch, then the last one copied
+    let mut kept = { let (r, g, b) = picker.rgb(); (r, g, b, q8(picker.alpha)) };
     let mut tip_text: &'static str = "";
     let mut tip_since: f64 = 0.0;
     let mut cursor_now = CursorIcon::Default;
 
-    let mut swatches: [Option<(u8, u8, u8, u8)>; 8] = load_swatches();
+    let mut swatches = load_swatches();
+    // scroll position of the swatch row, in swatches: where it is, and where it is gliding to
+    let mut sw_pos: f32 = 0.0;
+    let mut sw_goal: f32 = 0.0;
 
     let mut styled = screen::apply_win11_style(TITLE_CAPTION_BGR);
     let mut framed = false;
@@ -3388,7 +3583,7 @@ async fn main() {
         let scale = (sw / CONTENT_W).min(sh / (TITLE_H + CONTENT_H)).max(0.05);
         // title bar metrics in logical screen px, for native drag/resize hit-testing
         let cap_px = (TITLE_H * scale) as i32;
-        let zone_px = (TITLE_BTN_W * 4.0 * scale) as i32;
+        let zone_px = (TITLE_BTN_W * 5.0 * scale) as i32;
         if !framed {
             framed = screen::enable_custom_frame(cap_px, sh as i32, zone_px);
             if framed {
@@ -3428,28 +3623,27 @@ async fn main() {
 
         // ----- layout -----
         let sv = at(14.0, 14.0, 232.0, 232.0);
-        // CIE diagram: largest diagram-aspect rect that leaves room for its axis labels
-        let lab_rect = fit_rect(
-            Rect::new(sv.x + 26.0, sv.y + 16.0, sv.w - 42.0, sv.h - 34.0),
-            LAB_TEX_W as f32, LAB_TEX_H as f32,
-        );
-        let hue_bar = at(256.0, 14.0, 16.0, 232.0);
-        let alpha_bar = at(280.0, 14.0, 16.0, 232.0);
-        let preview = at(310.0, 14.0, 196.0, 52.0);
-        let mode_btn = at(310.0, 74.0, 196.0, 26.0);
-        let bars: [Rect; 4] = std::array::from_fn(|i| at(330.0, 119.0 + i as f32 * 24.0, 118.0, 10.0));
-        let val_field = at(14.0, 256.0, 282.0, 28.0);
-        let hex_field = at(310.0, 256.0, 114.0, 28.0);
-        let pick_btn = at(432.0, 256.0, 74.0, 28.0);
-        // thumb travel along a vertical bar / a channel slider, as 0..1
-        let bar_t = |bar: Rect| {
-            let cap = bar.w * 0.5;
-            clamp01((m.y - bar.y - cap) / (bar.h - 2.0 * cap))
-        };
-        let chan_t = |bar: Rect| {
-            let cap = bar.h * 0.5;
-            clamp01((m.x - bar.x - cap) / (bar.w - 2.0 * cap))
-        };
+        let lab_rect = cie_rect(sv);
+        let hue_bar = at(257.0, 14.0, 18.0, 232.0);
+        let alpha_bar = at(284.0, 14.0, 18.0, 232.0);
+        let swatch_new = at(314.0, 14.0, 84.0, 36.0);
+        let swatch_kept = at(314.0, 50.0, 84.0, 36.0);
+        let pick_btn = at(410.0, 14.0, 96.0, 30.0);
+        let mode_btn = at(410.0, 56.0, 96.0, 30.0);
+        let bars: [Rect; 4] = std::array::from_fn(|i| at(334.0, 113.0 + i as f32 * 25.0, 112.0, 12.0));
+        let val_field = at(14.0, 256.0, 283.0, 24.0);
+        let sw_row = at(314.0, 215.0, 192.0, 20.0);
+        let sw_track = at(314.0, 240.0, 192.0, 5.0);
+        let sw_thumb_w = 26.0;
+        let sw_max = (SWATCH_SLOTS - SWATCH_SHOWN) as f32;
+        sw_pos += (sw_goal - sw_pos) * (1.0 - (-get_frame_time() * 16.0).exp());
+        if (sw_goal - sw_pos).abs() < 0.002 {
+            sw_pos = sw_goal;
+        }
+        let hex_field = at(314.0, 256.0, 192.0, 24.0);
+        // pointer position along a vertical bar / a channel slider, as 0..1
+        let bar_t = |bar: Rect| clamp01((m.y - bar.y - GRIP_HALF) / (bar.h - GRIP_HALF * 2.0));
+        let chan_t = |bar: Rect| clamp01((m.x - bar.x - GRIP_HALF) / (bar.w - GRIP_HALF * 2.0));
 
         // ------- screen-pick mode ----------(alr)
         let was_picking = picking;
@@ -3562,10 +3756,11 @@ async fn main() {
 
         if free && pressed && active.is_none() {
             active = if hit(sv, m, 0.0) { Some(Widget::SatVal)
-            } else if hit(hue_bar, m, 4.0) { Some(Widget::Hue)
-            } else if hit(alpha_bar, m, 4.0) { Some(Widget::Alpha)
+            } else if hit(hue_bar, m, 8.0) { Some(Widget::Hue)
+            } else if hit(alpha_bar, m, 8.0) { Some(Widget::Alpha)
+            } else if hit(sw_track, m, 4.0) { Some(Widget::SwatchScroll)
             } else {
-                (0..4).find(|i| !chans[*i].label.is_empty() && hit(bars[*i], m, 7.0)).map(Widget::Chan)
+                (0..4).find(|i| !chans[*i].label.is_empty() && hit(bars[*i], m, 8.0)).map(Widget::Chan)
             };
         }
 
@@ -3579,14 +3774,17 @@ async fn main() {
                     let gv = clamp01((luma8(r, g, b) as f32 + dir) / 255.0);
                     picker.sync_rgb_f(gv, gv, gv);
                 } else {
-                    picker.hue = (picker.hue - dir).clamp(0.0, 359.9999);
+                    picker.hue = (picker.hue + dir).clamp(0.0, 359.9999);
                     let (r, g, b) = picker.rgb_f32();
                     picker.keep_hsv = true;
                     picker.sync_rgb_f(r, g, b);
                 }
             } else if hit(alpha_bar, m, 4.0) {
                 picker.alpha = clamp01(picker.alpha + dir / 255.0);
-            } else if let Some(i) = (0..4).find(|i| !chans[*i].label.is_empty() && hit(bars[*i], m, 7.0)) {
+            } else if hit(sw_row, m, 3.0) || hit(sw_track, m, 4.0) {
+                // wheel down moves further along the saved colors
+                sw_goal = (sw_goal - dir * 2.0).clamp(0.0, sw_max);
+            } else if let Some(i) = (0..4).find(|i| !chans[*i].label.is_empty() && hit(bars[*i], m, 8.0)) {
                 let t = clamp01(chans[i].t + dir * chan_step(mode, chans[i].label));
                 set_channel(mode, i, t, &mut picker);
             }
@@ -3721,7 +3919,7 @@ async fn main() {
                     picker.sync_rgb_f(gv, gv, gv);
                 }
                 Some(Widget::Hue) => {
-                    picker.hue = hue_from_t(bar_t(hue_bar));
+                    picker.hue = hue_from_t(1.0 - bar_t(hue_bar));
 
                     let (r, g, b) = picker.rgb_f32();
                     picker.keep_hsv = true;
@@ -3732,6 +3930,11 @@ async fn main() {
                 }
                 Some(Widget::Chan(i)) => {
                     set_channel(mode, i, chan_t(bars[i]), &mut picker);
+                }
+                Some(Widget::SwatchScroll) => {
+                    let t = clamp01((m.x - sw_track.x - sw_thumb_w * 0.5) / (sw_track.w - sw_thumb_w));
+                    sw_goal = t * sw_max;
+                    sw_pos = sw_goal; // the bar follows the cursor exactly
                 }
                 None => {}
             }
@@ -3840,28 +4043,39 @@ async fn main() {
         }
 
         // ---------- color plane ----------
-        let plane_r = 4.0;
+        let plane_r = 6.0;
         if mode == ColorMode::Gray {
             ui.tex(sv, plane_r, &gray_sq);
         } else if diagram_mode {
             // LAB/xyZ/xyY: the cie 1931 chromaticity diagram + reference lines
-            ui.fill(sv, plane_r, BLACK);
+            ui.fill(sv, plane_r, Color::from_rgba(21, 21, 20, 255));
             let img = lab_img.get_or_insert_with(|| {
                 let t = Texture2D::from_rgba8(LAB_TEX_W, LAB_TEX_H, &lab_diagram_bytes(LAB_TEX_W, LAB_TEX_H));
                 t.set_filter(FilterMode::Linear);
                 t
             });
-            ui.tex(lab_rect, 0.0, img);
-            draw_lab_reference(&ui, lab_rect);
+            draw_cie(&ui, lab_rect, img);
         } else if plane_mode {
             if mode == ColorMode::Munsell {
-                ui.fill(sv, plane_r, Color::from_rgba(21, 21, 20, 255)); // well behind the wheel
+                ui.fill(sv, plane_r, Color::from_rgba(21, 21, 20, 255)); // well behind the ring
             }
             ui.tex(sv, plane_r, &plane_sq);
-            if mode == ColorMode::Yuv {
-                draw_uv_reference(&ui, sv, 0.436, "U", "V");
+            if mode == ColorMode::Munsell {
+                draw_munsell_reference(&ui, sv, picker.munsell);
+            } else if mode == ColorMode::Oklch {
+                draw_oklch_reference(&ui, sv);
+            } else if mode == ColorMode::Cmyk {
+                let (_, _, y, k) = picker.cmyk;
+                draw_percent_grid(&ui, sv, "C", "M", false, |u, v| cmyk_to_rgb(u, 1.0 - v, y, k));
+            } else if mode == ColorMode::Hwb {
+                let hue = picker.hue;
+                draw_percent_grid(&ui, sv, "W", "B", true, |u, v| {
+                    if u + v > 1.0 && dim_planes() { (0.1, 0.1, 0.1) } else { hwb_to_rgb(hue, u, v) }
+                });
+            } else if mode == ColorMode::Yuv {
+                draw_uv_reference(&ui, sv, 0.436, 0.615, "U", "V");
             } else if mode == ColorMode::Ypbpr {
-                draw_uv_reference(&ui, sv, 0.5, "Pb", "Pr");
+                draw_uv_reference(&ui, sv, 0.5, 0.5, "Pb", "Pr");
             }
         } else if hsl_mode {
             ui.tex(sv, plane_r, &hsl_sq);
@@ -3882,7 +4096,7 @@ async fn main() {
         } else if mode == ColorMode::Munsell {
             let (mh, _, _) = picker.munsell;
             let a = (mh * 3.6f32).to_radians();
-            let rr = sv.w * 0.5 * 0.8;
+            let rr = sv.w * 0.5 * (MUNSELL_R_OUT + MUNSELL_R_IN) * 0.5;
             (sv.x + sv.w * 0.5 + a.sin() * rr, sv.y + sv.h * 0.5 - a.cos() * rr)
         } else if plane_mode {
             (sv.x + picker.plane_pos.0 * sv.w, sv.y + (1.0 - picker.plane_pos.1) * sv.h)
@@ -3900,43 +4114,71 @@ async fn main() {
         let grab = |w: Widget, over: bool| {
             if active == Some(w) || (free && active.is_none() && over) { 1.0 } else { 0.0 }
         };
-        ui.thumb(vec2(cx, cy), 7.0 + grab(Widget::SatVal, false), opaque);
+        ui.reticle(vec2(cx, cy), 5.0 + grab(Widget::SatVal, false));
 
         // ---------- hue + alpha bars ----------
-        let cap = hue_bar.w * 0.5;
-        let travel = hue_bar.h - 2.0 * cap;
-        let hue_grab = grab(Widget::Hue, hit(hue_bar, m, 4.0));
+        let bar_mark = |bar: Rect, t: f32, w: Widget, fill: Color| {
+            let big = grab(w, hit(bar, m, 8.0));
+            ui.marker(vec2(bar.x + bar.w * 0.5, bar.y + GRIP_HALF + t * (bar.h - GRIP_HALF * 2.0)),
+                      bar.w + 8.0 + big * 2.0, GRIP_HALF * 2.0, fill);
+        };
         if mode == ColorMode::Gray {
             ui.strip(hue_bar, &gray_tex, 0.0, WHITE);
-            let gy = hue_bar.y + cap + (1.0 - luma8(rf, gf, bf) as f32 / 255.0) * travel;
-            ui.thumb(vec2(hue_bar.x + cap, gy), 8.0 + hue_grab, opaque);
+            let gv = luma8(rf, gf, bf);
+            bar_mark(hue_bar, 1.0 - gv as f32 / 255.0, Widget::Hue, Color::from_rgba(gv, gv, gv, 255));
         } else {
             ui.strip(hue_bar, &hue_tex, 0.0, WHITE);
-            let hy = hue_bar.y + cap + picker.hue / 360.0 * travel;
-            ui.thumb(vec2(hue_bar.x + cap, hy), 8.0 + hue_grab, Color::from_rgba(hr, hg, hb, 255));
+            let (tr, tg, tb) = hsv_to_rgb(picker.hue, 0.8, 1.0); // the strip's own softened color
+            bar_mark(hue_bar, 1.0 - picker.hue / 360.0, Widget::Hue, Color::from_rgba(tr, tg, tb, 255));
+        }
+        ui.strip(alpha_bar, &fade_tex, 4.0, opaque);
+        bar_mark(alpha_bar, 1.0 - picker.alpha, Widget::Alpha, picker.color());
+
+        // ---------- new / current ----------
+        // each half is a rounded rect with its inner edge squared off by a second piece
+        let kept_color = Color::from_rgba(kept.0, kept.1, kept.2, kept.3);
+        ui.checker(swatch_new, 5.0, 6.0, picker.color());
+        ui.checker(Rect::new(swatch_new.x, swatch_new.y + 12.0, swatch_new.w, swatch_new.h - 12.0), 0.0, 6.0, picker.color());
+        ui.checker(swatch_kept, 5.0, 6.0, kept_color);
+        ui.checker(Rect::new(swatch_kept.x, swatch_kept.y, swatch_kept.w, 12.0), 0.0, 6.0, kept_color);
+        ui.hair(Rect::new(swatch_new.x, swatch_new.y, swatch_new.w, swatch_new.h * 2.0), 5.0, STROKE_HI);
+        // names in whichever of black / white reads on each half (as seen over the checkerboard)
+        let name_ink = |c: Color| {
+            let seen = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) * c.a + 0.88 * (1.0 - c.a);
+            if seen > 0.58 { Color::new(0.0, 0.0, 0.0, 0.7) } else { Color::new(1.0, 1.0, 1.0, 0.8) }
+        };
+        ui.label("New", swatch_new.x + 7.0, swatch_new.y + 10.0, 9.5, true, name_ink(picker.color()), 0.0);
+        ui.label("Current", swatch_kept.x + 7.0, swatch_kept.y + swatch_kept.h - 10.0, 9.5, true, name_ink(kept_color), 0.0);
+        if free && hit(swatch_kept, m, 0.0) {
+            cursor = CursorIcon::Pointer;
+            tip = Some(("Go back to this color (the last one you copied)", swatch_kept));
+            if pressed && active.is_none() {
+                picker.sync_hsv(kept.0, kept.1, kept.2);
+                picker.alpha = kept.3 as f32 / 255.0;
+            }
         }
 
-        ui.strip(alpha_bar, &fade_tex, 4.0, opaque);
-        let ay = alpha_bar.y + cap + (1.0 - picker.alpha) * travel;
-        ui.thumb(vec2(alpha_bar.x + cap, ay),
-                 8.0 + grab(Widget::Alpha, hit(alpha_bar, m, 4.0)), picker.color());
-
-        // ---------- preview ----------
-        ui.checker(preview, 4.0, 6.0, picker.color());
-        ui.hair(preview, 4.0, STROKE);
-
-        // ---------- mode menu button ----------
-        let mode_hot = !was_picking && !picking && !editing && hit(mode_btn, m, 0.0);
-        ui.button(mode_btn, mode_hot || dd_open);
-        let mode_cy = mode_btn.y + mode_btn.h * 0.5;
-        ui.label("Mode", mode_btn.x + 10.0, mode_cy, 11.5, false, TEXT_DIM, 0.0);
-        ui.label(mode_name(mode), mode_btn.x + mode_btn.w - 27.0, mode_cy, 12.5, true, TEXT, 1.0);
-        ui.icon_chevron(vec2(mode_btn.x + mode_btn.w - 14.0, mode_cy), dd_open, TEXT_DIM);
-        if mode_hot {
-            cursor = CursorIcon::Pointer;
+        // ---------- screen pick button ----------
+        let pick_hot = free && hit(pick_btn, m, 0.0);
+        ui.button(pick_btn, pick_hot);
+        ui.label("Pick Screen", pick_btn.x + pick_btn.w * 0.5, pick_btn.y + pick_btn.h * 0.5, 11.5, true,
+                 Color::from_rgba(12, 12, 13, 255), 0.5);
+        if pick_hot {
+            tip = Some(("Pick a color from anywhere on screen  (P)", pick_btn));
             if pressed && active.is_none() {
-                dd_open = !dd_open;
+                picking = true;
+                start_pick(&picker, &mut saved_picker);
             }
+        }
+
+        // ---------- mode dropdown ----------
+        let mode_hot = !was_picking && !picking && !editing && hit(mode_btn, m, 0.0);
+        ui.field(mode_btn, if mode_hot || dd_open { SURFACE_HI } else { SURFACE }, STROKE);
+        let mode_cy = mode_btn.y + mode_btn.h * 0.5;
+        ui.label(mode_name(mode), mode_btn.x + 9.0, mode_cy, 11.5, false, TEXT, 0.0);
+        ui.icon_chevron(vec2(mode_btn.x + mode_btn.w - 12.0, mode_cy), false, TEXT_DIM);
+        if mode_hot && pressed && active.is_none() {
+            dd_open = !dd_open;
         }
 
         // ---------- channel sliders ----------
@@ -3944,25 +4186,27 @@ async fn main() {
             if chans[i].label.is_empty() {
                 continue; // unused slot (GRAY has only G + A)
             }
-            let hot = grab(Widget::Chan(i), hit(bars[i], m, 7.0)) > 0.0;
-            draw_slider(&ui, bars[i], o.x + 310.0, o.x + 506.0, &chans[i], &chan_tex[i], hot);
+            let hot = grab(Widget::Chan(i), hit(bars[i], m, 8.0)) > 0.0;
+            draw_slider(&ui, bars[i], o.x + 314.0, o.x + 506.0, &chans[i], &chan_tex[i], hot);
         }
 
-        // ---------- saved colors ----------
-        for i in 0..8usize {
-            let cell = at(310.0 + i as f32 * (176.0 / 7.0), 226.0, 20.0, 20.0);
-            let over = free && hit(cell, m, 2.0);
-            match swatches[i] {
-                Some((sr, sg, sb, sa)) => {
-                    ui.checker(cell, 10.0, 5.0, Color::from_rgba(sr, sg, sb, sa));
-                    if over { ui.hair(cell, 10.0, Color::new(1.0, 1.0, 1.0, 0.7)); }
-                }
-                None => ui.fill(cell, 10.0, if over { SURFACE_HI } else { SURFACE }),
+        // ---------- swatches: a window of 8 onto 100 slots, with a scrollbar ----------
+        ui.clip(Some(Rect::new(sw_row.x - 1.0, sw_row.y - 1.0, sw_row.w + 2.0, sw_row.h + 2.0)));
+        for slot in 0..=SWATCH_SHOWN {
+            let i = sw_pos.floor() as usize + slot;
+            if i >= SWATCH_SLOTS {
+                break;
             }
+            let cell = Rect::new(sw_row.x + (i as f32 - sw_pos) * (172.0 / 7.0), sw_row.y, 20.0, 20.0);
+            let over = free && hit(cell, m, 1.0) && hit(sw_row, m, 1.0);
+            match swatches[i] {
+                Some((sr, sg, sb, sa)) => ui.checker(cell, 5.0, 5.0, Color::from_rgba(sr, sg, sb, sa)),
+                None => ui.fill(cell, 5.0, if over { SURFACE_HI } else { SURFACE }),
+            }
+            ui.hair(cell, 5.0, if over { Color::new(1.0, 1.0, 1.0, 0.6) } else { STROKE });
             if !over {
                 continue;
             }
-            cursor = CursorIcon::Pointer;
             tip = Some((
                 if swatches[i].is_some() { "Click: use  |  Right-click: replace  |  Middle-click: clear" }
                 else { "Click to save the current color" },
@@ -3986,6 +4230,16 @@ async fn main() {
             }
         }
 
+        ui.clip(None);
+        let scroll_hot = grab(Widget::SwatchScroll, hit(sw_track, m, 4.0)) > 0.0;
+        ui.fill(sw_track, 2.5, SURFACE);
+        let thumb_x = sw_track.x + sw_pos / sw_max * (sw_track.w - sw_thumb_w);
+        ui.fill(Rect::new(thumb_x, sw_track.y, sw_thumb_w, sw_track.h), 2.5,
+                if scroll_hot { Color::from_rgba(190, 190, 195, 255) } else { Color::from_rgba(112, 112, 118, 255) });
+        if free && active.is_none() && hit(sw_track, m, 4.0) {
+            tip = Some(("Scroll through the 100 color slots (the mouse wheel works too)", sw_track));
+        }
+
         // ---------- value field: click to type, button to copy ----------
         let values_text = mode_values(mode, &picker);
         let field_cy = val_field.y + val_field.h * 0.5;
@@ -3994,21 +4248,17 @@ async fn main() {
         let over_field = field_on && hit(val_field, m, 0.0);
         let over_side = over_field && hit(side_btn, m, 0.0);
         let bad = now - bad_at < 0.9;
-        let field_bg = if editing { Color::from_rgba(21, 21, 20, 255) }
-            else if over_field && !over_side { SURFACE_HI } else { SURFACE };
-        ui.fill(val_field, 4.0, field_bg);
-        if bad || editing {
-            ui.hair(val_field, 4.0, if bad { DANGER } else { STROKE_HI });
-        }
+        let field_bg = if editing { POPOVER } else { SURFACE };
+        ui.field(val_field, field_bg, if bad { DANGER } else if editing { Color::new(1.0, 1.0, 1.0, 0.55) } else { STROKE });
         let shown = if editing { edit_buf.clone() } else { format_mode(mode, &picker) };
         let room = val_field.w - 10.0 - 30.0;
-        let mut fs = 13.0;
+        let mut fs = 12.0;
         while fs > 9.0 && ui.width(&shown, fs, false) > room {
             fs -= 0.5;
         }
         let tw = ui.width(&shown, fs, false);
         if editing && edit_fresh && !shown.is_empty() {
-            ui.fill(Rect::new(val_field.x + 7.0, field_cy - 9.0, tw + 6.0, 18.0), 3.0, with_alpha(ACCENT, 0.22));
+            ui.fill(Rect::new(val_field.x + 7.0, field_cy - 9.0, tw + 6.0, 18.0), 3.0, Color::new(1.0, 1.0, 1.0, 0.18));
         }
         ui.label(&shown, val_field.x + 10.0, field_cy, fs, false, TEXT, 0.0);
         if editing && !edit_fresh && (now * 2.0).fract() < 0.5 {
@@ -4016,13 +4266,13 @@ async fn main() {
         }
         let side_c = vec2(side_btn.x + 14.0, field_cy);
         if over_side {
-            ui.fill(Rect::new(side_btn.x + 3.0, side_btn.y + 3.0, 22.0, 22.0), 3.0, SURFACE_HI);
+            ui.fill(Rect::new(side_btn.x + 4.0, side_btn.y + 3.0, 20.0, 18.0), 4.0, SURFACE_HI);
         }
         let side_bg = if over_side { SURFACE_HI } else { field_bg };
         if editing {
-            ui.icon_check(side_c, ACCENT);
+            ui.icon_check(side_c, TEXT);
         } else if copied.0 == 1 && now - copied.1 < 1.2 {
-            ui.icon_check(side_c, ACCENT);
+            ui.icon_check(side_c, TEXT);
         } else {
             ui.icon_copy(side_c, if over_side { TEXT } else { TEXT_DIM }, side_bg);
         }
@@ -4051,73 +4301,55 @@ async fn main() {
             }
         }
 
-        // ---------- hex readout (click to copy) ----------
+        // ---------- hex field (click to copy) ----------
         let hex_text = hex_string(r, g, b, a8);
         let hex_hot = free && hit(hex_field, m, 0.0);
-        ui.button(hex_field, hex_hot);
-        ui.label(&hex_text, hex_field.x + 10.0, field_cy, 13.0, true, TEXT, 0.0);
+        ui.field(hex_field, if hex_hot { SURFACE_HI } else { SURFACE }, STROKE);
+        ui.label(&hex_text, hex_field.x + 10.0, field_cy, 12.5, true, TEXT, 0.0);
         let hex_c = vec2(hex_field.x + hex_field.w - 14.0, field_cy);
         if copied.0 == 2 && now - copied.1 < 1.2 {
-            ui.icon_check(hex_c, ACCENT);
+            ui.icon_check(hex_c, TEXT);
         } else {
-            ui.icon_copy(hex_c, if hex_hot { TEXT } else { TEXT_DIM },
-                         if hex_hot { SURFACE_HI } else { SURFACE });
+            ui.icon_copy(hex_c, if hex_hot { TEXT } else { TEXT_DIM }, if hex_hot { SURFACE_HI } else { SURFACE });
         }
         if hex_hot {
-            cursor = CursorIcon::Pointer;
             tip = Some(("Copy hex", hex_field));
             if pressed && active.is_none() {
                 clipboard_set(&hex_text);
                 copied = (2, now);
             }
         }
-
-        // ---------- screen pick button ----------
-        let pick_hot = free && hit(pick_btn, m, 0.0);
-        ui.button(pick_btn, pick_hot);
-        let pick_w = 20.0 + ui.width("Pick", 12.0, false);
-        let pick_x = pick_btn.x + (pick_btn.w - pick_w) * 0.5;
-        ui.icon_target(vec2(pick_x + 7.0, field_cy), if pick_hot { TEXT } else { TEXT_DIM });
-        ui.label("Pick", pick_x + 20.0, field_cy, 12.0, false, TEXT, 0.0);
-        if pick_hot {
-            cursor = CursorIcon::Pointer;
-            tip = Some(("Pick a color from anywhere on screen  (P)", pick_btn));
-            if pressed && active.is_none() {
-                picking = true;
-                start_pick(&picker, &mut saved_picker);
-            }
+        if copied.1 == now {
+            kept = (r, g, b, a8);
         }
 
         // ---------- mode menu (drawn last so it sits above the sliders) ----------
         if dd_open {
             let cols = 3usize;
             let rows = MODES.len().div_ceil(cols);
-            let (pad, cell_h) = (6.0, 26.0);
-            let pop = Rect::new(mode_btn.x, mode_btn.y + mode_btn.h + 4.0,
-                                mode_btn.w, pad * 2.0 + rows as f32 * cell_h);
+            let (pad, cell_h) = (4.0, 20.0);
+            let pop = Rect::new(o.x + 328.0, mode_btn.y + mode_btn.h + 2.0,
+                                178.0, pad * 2.0 + rows as f32 * cell_h);
             let cell_w = (pop.w - pad * 2.0) / cols as f32;
-            ui.shadow(pop, 5.0, 20.0, Color::new(0.0, 0.0, 0.0, 0.5));
-            ui.fill(pop, 5.0, POPOVER);
-            ui.hair(pop, 5.0, STROKE_HI);
+            ui.shadow(pop, 8.0, 24.0, Color::new(0.0, 0.0, 0.0, 0.7));
+            ui.fill(pop, 8.0, POPOVER);
+            ui.hair(pop, 8.0, STROKE_HI);
             let mut chose = None;
             for (i, md) in MODES.iter().enumerate() {
                 let cell = Rect::new(
-                    pop.x + pad + (i % cols) as f32 * cell_w + 1.0,
-                    pop.y + pad + (i / cols) as f32 * cell_h + 1.0,
-                    cell_w - 2.0, cell_h - 2.0,
+                    pop.x + pad + (i % cols) as f32 * cell_w,
+                    pop.y + pad + (i / cols) as f32 * cell_h,
+                    cell_w, cell_h,
                 );
-                let over = hit(cell, m, 0.0);
+                let over = m.x >= cell.x && m.x < cell.x + cell.w && m.y >= cell.y && m.y < cell.y + cell.h;
                 let current = *md == mode;
-                if current || over {
-                    ui.fill(cell, 3.0, SURFACE_HI);
-                }
-                ui.label(mode_name(*md), cell.x + cell.w * 0.5, cell.y + cell.h * 0.5, 11.5,
-                         current, if current || over { TEXT } else { TEXT_DIM }, 0.5);
                 if over {
-                    cursor = CursorIcon::Pointer;
-                    if pressed {
-                        chose = Some(*md);
-                    }
+                    ui.fill(cell, 4.0, Color::new(1.0, 1.0, 1.0, 0.09));
+                }
+                ui.label(mode_name(*md), cell.x + 6.0, cell.y + cell.h * 0.5, 11.0,
+                         current, if over || current { WHITE } else { TEXT_DIM }, 0.0);
+                if over && pressed {
+                    chose = Some(*md);
                 }
             }
             match chose {
@@ -4135,34 +4367,43 @@ async fn main() {
         }
 
         // ---------- title bar ----------
-        ui.hairline(0.0, TITLE_H, vw, 0.0, Color::new(1.0, 1.0, 1.0, 0.06));
+        draw_rectangle(0.0, 0.0, vw, TITLE_H, BG);
+        ui.hairline(0.0, TITLE_H, vw, 0.0, STROKE);
         let title_cy = TITLE_H * 0.5;
-        draw_texture_ex(&icon_tex, 8.0, title_cy - 10.0, WHITE,
-                        DrawTextureParams { dest_size: Some(vec2(20.0, 20.0)), ..Default::default() });
-        ui.label(TITLE_TEXT, 33.0, title_cy, 12.5, true, TEXT, 0.0);
-        let title_w = ui.width(TITLE_TEXT, 12.5, true);
-        ui.label("v1.0.0", 33.0 + title_w + 8.0, title_cy + 0.5, 11.0, false, with_alpha(TEXT_DIM, 0.6), 0.0);
+        draw_texture_ex(&icon_tex, 8.0, title_cy - 9.0, WHITE,
+                        DrawTextureParams { dest_size: Some(vec2(18.0, 18.0)), ..Default::default() });
+        ui.label(TITLE_TEXT, 32.0, title_cy, 12.0, true, TEXT, 0.0);
+        let title_w = ui.width(TITLE_TEXT, 12.0, true);
+        ui.label("v1.0.1-ai-redesigned-edition", 32.0 + title_w + 8.0, title_cy, 11.0, false, with_alpha(TEXT_DIM, 0.7), 0.0);
 
         let maxed = screen::is_maximized();
-        for kind in 0..4u8 {
-            let rect = Rect::new(vw - (4 - kind) as f32 * TITLE_BTN_W, 0.0, TITLE_BTN_W, TITLE_H);
+        for kind in 0..5u8 {
+            let rect = Rect::new(vw - (5 - kind) as f32 * TITLE_BTN_W, 0.0, TITLE_BTN_W, TITLE_H);
             let hov = !was_picking && !picking && hit(rect, m, 0.0);
             let c = vec2(rect.x + rect.w * 0.5, title_cy);
             if hov {
-                let bg = if kind == 3 { Color::from_rgba(196, 43, 28, 255) } else { Color::new(1.0, 1.0, 1.0, 0.09) };
+                let bg = if kind == 4 { Color::from_rgba(196, 43, 28, 255) } else { Color::new(1.0, 1.0, 1.0, 0.09) };
                 draw_rectangle(rect.x, rect.y, rect.w, rect.h, bg);
             }
             let ink = if hov { WHITE } else { TEXT_DIM };
+            let behind = if hov { Color::from_rgba(50, 50, 48, 255) } else { BG };
             match kind {
                 0 => {
-                    ui.icon_pin(c + vec2(1.0, 0.0), if on_top { ACCENT } else { with_alpha(ink, 0.55) });
+                    // half-filled circle: bright when dimming is on
+                    let col = if dim_planes() { WHITE } else { with_alpha(ink, 0.7) };
+                    ui.fill(Rect::new(c.x - 5.0, c.y - 5.0, 10.0, 10.0), 5.0, col);
+                    draw_rectangle(c.x, c.y - 6.0, 6.5, 12.0, behind);
+                    ui.ring(c, 5.0, 1.2, col);
                 }
-                1 => ui.line(c - vec2(4.5, 0.0), c + vec2(4.5, 0.0), 1.2, ink),
-                2 => {
+                1 => {
+                    ui.icon_pin(c + vec2(1.0, 0.0), if on_top { WHITE } else { with_alpha(ink, 0.7) });
+                }
+                2 => ui.line(c - vec2(4.5, 0.0), c + vec2(4.5, 0.0), 1.2, ink),
+                3 => {
                     if maxed {
                         ui.stroke(Rect::new(c.x - 2.5, c.y - 5.5, 8.0, 8.0), 1.5, 1.2, ink);
                         let front = Rect::new(c.x - 5.5, c.y - 2.5, 8.0, 8.0);
-                        ui.fill(front, 1.5, if hov { Color::from_rgba(50, 50, 48, 255) } else { BG });
+                        ui.fill(front, 1.5, behind);
                         ui.stroke(front, 1.5, 1.2, ink);
                     } else {
                         ui.stroke(Rect::new(c.x - 4.5, c.y - 4.5, 9.0, 9.0), 1.5, 1.2, ink);
@@ -4175,16 +4416,26 @@ async fn main() {
             }
             if hov {
                 if kind == 0 {
+                    tip = Some((
+                        if dim_planes() { "Dim colors outside the displayable range: on" }
+                        else { "Dim colors outside the displayable range: off" },
+                        rect,
+                    ));
+                } else if kind == 1 {
                     tip = Some((if on_top { "Always on top: on" } else { "Keep window on top" }, rect));
                 }
                 if pressed && active.is_none() {
                     match kind {
                         0 => {
+                            DIM_PLANES.store(!dim_planes(), std::sync::atomic::Ordering::Relaxed);
+                            plane_key = (u8::MAX, f32::MAX, f32::MAX); // redraw the plane
+                        }
+                        1 => {
                             on_top = !on_top;
                             screen::set_topmost(on_top);
                         }
-                        1 => screen::minimize_window(),
-                        2 => screen::toggle_maximize_window(),
+                        2 => screen::minimize_window(),
+                        3 => screen::toggle_maximize_window(),
                         _ => screen::close_window(),
                     }
                 }
@@ -4207,7 +4458,7 @@ async fn main() {
                         y = anchor.y - h - 6.0;
                     }
                     let tr = Rect::new(ui.snap(x), ui.snap(y), w, h);
-                    ui.fill(tr, 3.0, Color::from_rgba(62, 62, 58, 255));
+                    ui.field(tr, Color::from_rgba(60, 60, 56, 255), STROKE_HI);
                     ui.label(text, tr.x + 8.0, tr.y + h * 0.5, 11.5, false, TEXT, 0.0);
                 }
             }
@@ -4223,7 +4474,7 @@ async fn main() {
         }
 
         // remember the color, mode and pin for next launch (once the mouse is let go)
-        let state = Saved { mode, rgba: (r, g, b, a8), on_top };
+        let state = Saved { mode, rgba: (r, g, b, a8), on_top, dim: dim_planes() };
         if state != persisted && !picking && !is_mouse_button_down(MouseButton::Left) {
             persisted = state;
             save_state(&state);
