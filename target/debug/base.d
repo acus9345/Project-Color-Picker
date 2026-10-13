@@ -1,0 +1,1 @@
+C:\Users\User\Downloads\Project-Color-Picker-master\ (1)\Project-Color-Picker\target\debug\base.exe: C:\Users\User\Downloads\Project-Color-Picker-master\ (1)\Project-Color-Picker\assets\icon.png C:\Users\User\Downloads\Project-Color-Picker-master\ (1)\Project-Color-Picker\src\bin\base.rs

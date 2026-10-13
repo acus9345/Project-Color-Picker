@@ -1,14 +1,19 @@
 #![windows_subsystem = "windows"]
 
-use std::io::Error;
+use macroquad::miniquad::window::{clipboard_get, clipboard_set, set_mouse_cursor};
+use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, CursorIcon, Equation};
 use macroquad::prelude::*;
 
-// change them whenever you want
-const SCALE_X: f32 = 0.75;
-const SCALE_Y: f32 = 0.70;
-//oh god
-const WINDOW_W: f32 = 540.0 * SCALE_X;
-const WINDOW_H: f32 = 388.0 * SCALE_Y;
+// default window size = the design canvas times this (change it whenever you want)
+const WINDOW_SCALE: f32 = 1.0;
+
+// the ui is laid out on a fixed canvas (title bar + content block) and scaled
+// uniformly to fit whatever size the window is
+const TITLE_H: f32 = 32.0;
+const CONTENT_W: f32 = 520.0;
+const CONTENT_H: f32 = 298.0;
+const WINDOW_W: f32 = CONTENT_W * WINDOW_SCALE;
+const WINDOW_H: f32 = (TITLE_H + CONTENT_H) * WINDOW_SCALE;
 
 fn conf() -> Conf {
     let icon = include_bytes!("../assets/icon.png");
@@ -30,22 +35,24 @@ fn conf() -> Conf {
         ..Default::default()
     }
 }
-//yea background color change it to whatever u want
-const BG:Color=Color::from_rgba(32, 32, 29, 255);
-const UI_TEXT:Color= Color::new(0.85, 0.87, 0.90, 1.0);
-const HINT:Color= Color::new(0.55, 0.57, 0.62, 1.0);
-const BORDER:Color = Color::new(0.0, 0.0, 0.0, 0.35);
+// ----- theme -----
+const BG: Color = Color::from_rgba(30, 30, 28, 255);
+const SURFACE: Color = Color::from_rgba(41, 41, 38, 255);
+const SURFACE_HI: Color = Color::from_rgba(54, 54, 50, 255);
+const POPOVER: Color = Color::from_rgba(38, 38, 35, 255);
+const STROKE: Color = Color::new(1.0, 1.0, 1.0, 0.07);
+const STROKE_HI: Color = Color::new(1.0, 1.0, 1.0, 0.16);
+const TEXT: Color = Color::from_rgba(224, 224, 219, 255);
+const TEXT_DIM: Color = Color::from_rgba(138, 138, 131, 255);
+const ACCENT: Color = Color::from_rgba(245, 245, 240, 255);
+const DANGER: Color = Color::from_rgba(255, 110, 96, 255);
 
-// ----- customizable title bar -----
-const TITLE_BAR_H:f32= 28.0;
-const TITLE_BG:Color = Color::from_rgba(45, 45, 42, 255);
-const TITLE_TEXT:&str= "Project Color picker";
-const TITLE_BTN_W:f32 = 46.0;
-/// caption/border color matching TITLE_BG (COLORREF = 0x00BBGGRR??? i guess).
-const TITLE_CAPTION_BGR:u32 = 0x002A_2D_2D;
+// ----- custom title bar -----
+const TITLE_TEXT: &str = "Project Color Picker";
+const TITLE_BTN_W: f32 = 40.0;
+/// window border color matching BG (COLORREF = 0x00BBGGRR)
+const TITLE_CAPTION_BGR: u32 = 0x001C_1E1E;
 
-const DESIGN_W:f32 =540.0;
-const DESIGN_H:f32= 388.0; // content + title bar
 const LAB_IMG_X_MIN:f64= 0.0039; // locus minimum x (~504 nm)
 const LAB_IMG_X_MAX:f64= 0.7347; // red tip (700 nm)
 const LAB_IMG_Y_MIN:f64= 0.0048; // violet end (~400 nm)
@@ -529,12 +536,6 @@ fn hit(rect: Rect, m: Vec2, pad: f32) -> bool {
 }
 
 
-fn sample_grad(bytes: &[u8], t: f32) -> Color {
-    let n = (bytes.len() / 4) as i32;
-    let idx = ((t * (n - 1) as f32).round().clamp(0.0, (n - 1) as f32)) as usize;
-    let i = idx * 4;
-    Color::from_rgba(bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3])
-}
 
 // ---------- color modes -------- i hope i didnt start this at all and just do a rgba color picker
 
@@ -612,6 +613,14 @@ fn parse_rgba(s: &str) -> Option<(u8, u8, u8, Option<u8>)> {
 
 fn parse_hex(s:&str) -> Option<((f32,f32,f32), Option<f32>)> {
     let t = s.trim().trim_start_matches('#');
+    if !t.is_ascii() {
+        return None; }
+    // #RGB / #RGBA shorthand: double every digit
+    let short: String;
+    let t = if t.len() == 3 || t.len() == 4 {
+        short = t.chars().flat_map(|c| [c, c]).collect();
+        short.as_str()
+    } else { t };
     if t.len() != 6 && t.len() != 8 {
         return None; }
     let hx = |h: &str| u8::from_str_radix(h, 16).ok();
@@ -979,7 +988,7 @@ fn mode_sliders(mode: ColorMode, p: &Picker) -> [ChanUi; 4] {
             ]
         }
         ColorMode::Hwb => {
-            // sticky H/gw/B is the source of truth while in HWB mode
+            // sticky H/W/B is the source of truth while in HWB mode
             let (h, w, bl) = p.hwb;
             let hw = |hh: f32| { let c = hwb_to_rgb(hh, 0.0, 0.0); [q8(c.0), q8(c.1), q8(c.2)] };
             let wb = |ww: f32, bb2: f32| { let c = hwb_to_rgb(h, ww, bb2); [q8(c.0), q8(c.1), q8(c.2)] };
@@ -988,7 +997,7 @@ fn mode_sliders(mode: ColorMode, p: &Picker) -> [ChanUi; 4] {
                 ChanUi { label: "H", t: h / 360.0, value: format!("{:.2}deg", h),
                     handle: color3(hw(h)),
                     bytes: grad_stops_bytes(gw, &ring) },
-                ChanUi { label: "gw", t: w, value: pct(w),
+                ChanUi { label: "W", t: w, value: pct(w),
                     bytes: grad_stops_bytes(gw, &[(0.0, wb(0.0, bl)), (1.0, wb(1.0, bl))]),
                     handle: Color::from_rgba(r8, g8, b8, 255) },
                 ChanUi { label: "B", t: bl, value: pct(bl),
@@ -1440,23 +1449,35 @@ fn save_swatches(sw: &[Option<(u8, u8, u8, u8)>; 8]) {
     let _ = std::fs::write(swatch_path(), s);
 }
 
-fn hints_path() -> std::path::PathBuf {
-    exe_dir().join("hints.txt")
+fn state_path() -> std::path::PathBuf {
+    exe_dir().join("state.txt")
 }
 
-fn load_hints() -> [bool; 4] {
-    let mut out = [true; 4];
-    if let Ok(text) = std::fs::read_to_string(hints_path()) {
-        for (i, line) in text.lines().take(4).enumerate() {
-            out[i] = line.trim() == "1";
-        }
-    }
-    out
+/// What the app reopens with: mode, color and the always-on-top pin.
+#[derive(Clone, Copy, PartialEq)]
+struct Saved {
+    mode: ColorMode,
+    rgba: (u8, u8, u8, u8),
+    on_top: bool,
 }
 
-fn save_hints(h: &[bool; 4]) {
-    let s: String = h.iter().map(|v| if *v { "1\n" } else { "0\n" }).collect();
-    let _ = std::fs::write(hints_path(), s);
+fn load_state() -> Option<Saved> {
+    let text = std::fs::read_to_string(state_path()).ok()?;
+    let mut lines = text.lines();
+    let name = lines.next()?.trim();
+    let mode = MODES.iter().copied().find(|m| mode_name(*m) == name)?;
+    let (r, g, b, a) = parse_rgba(lines.next()?)?;
+    let on_top = lines.next().is_some_and(|l| l.trim() == "1");
+    Some(Saved { mode, rgba: (r, g, b, a.unwrap_or(255)), on_top })
+}
+
+fn save_state(s: &Saved) {
+    let (r, g, b, a) = s.rgba;
+    let text = format!("{}
+{}, {}, {}, {}
+{}
+", mode_name(s.mode), r, g, b, a, s.on_top as u8);
+    let _ = std::fs::write(state_path(), text);
 }
 
 // ---------- gradient strips --------
@@ -1475,146 +1496,31 @@ fn slider_grad_bytes(w: usize, left: Color, right: Color) -> Vec<u8> {
     b
 }
 
-fn alpha_grad_bytes(cr: u8, cg: u8, cb: u8) -> Vec<u8> {
-    let (w, h) = (22usize, 258usize);
-    let r = 11.0;
-    let mut b = vec![0u8; w * h * 4];
-    for t in 0..h {
-        let yc = t as f32 + 0.5;
-        let half = if yc < r {
-            (r * r - (r - yc) * (r - yc)).sqrt()
-        } else if yc > h as f32 - r {
-            let d = yc - h as f32 + r;
-            (r * r - d * d).sqrt()
-        } else {
-            r
-        };
-        let alpha = (255.0 * (1.0 - (t as f32 + 1.0) / (h as f32 + 2.0))).round() as u8;
-        for x in 0..w {
-            if (x as f32 + 0.5 - r).abs() <= half {
-                let i = (t * w + x) * 4;
-                b[i] = cr;
-                b[i + 1] = cg;
-                b[i + 2] = cb;
-                b[i + 3] = alpha;
-            }
-        }
-    }
-    b
-}
-
-fn draw_stadium_rim(x: f32, y: f32, w: f32, h: f32, r: f32, fill: Color) {
-    if h > w {
-        let r = r.min(w * 0.5);
-        draw_circle(x + r, y + r, r + 1.0, fill);
-        draw_circle(x + r, y + h - r, r + 1.0, fill);
-        draw_rectangle(x, y + r, w, h - 2.0 * r, fill);
-    } else {
-        let r = r.min(h * 0.5);
-        draw_circle(x + r, y + r, r + 1.0, fill);
-        draw_circle(x + w - r, y + r, r + 1.0, fill);
-        draw_rectangle(x + r, y, w - 2.0 * r, h, fill);
-    }
-}
-
 // ---------- static textures ----------
+// 1px-wide strips; the shape shader stretches them and rounds them into pills
 
-fn pill_texture(w: u16, h: u16, r: u16) -> Texture2D {
-    let mut bytes = Vec::with_capacity(w as usize * h as usize * 4);
-    let (wf, hf, rf) = (w as f32, h as f32, r as f32);
-    for y in 0..h {
-        for x in 0..w {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
-            let cx = px.clamp(rf, wf - rf);
-            let cy = py.clamp(rf, hf - rf);
-            let d = (px - cx).hypot(py - cy) - rf;
-            let a = (0.5 - d).clamp(0.0, 1.0);
-            bytes.extend_from_slice(&[255, 255, 255, (a * 255.0) as u8]);
-        }
-    }
-    let t = Texture2D::from_rgba8(w, h, &bytes);
+fn strip_texture(rows: impl Iterator<Item = [u8; 4]>) -> Texture2D {
+    let bytes: Vec<u8> = rows.flatten().collect();
+    let t = Texture2D::from_rgba8(1, (bytes.len() / 4) as u16, &bytes);
     t.set_filter(FilterMode::Linear);
     t
 }
 
-fn hue_bar_texture(w: u16, h: u16, r: u16) -> Texture2D {
-    let mut bytes = Vec::with_capacity(w as usize * h as usize * 4);
-    let (wf, hf, rf) = (w as f32, h as f32, r as f32);
-    for y in 0..h {
-        let (r, g, b) = hsv_to_rgb(y as f32 / h as f32 * 360.0, 1.0, 1.0);
-        for x in 0..w {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
-            let dx = if px < rf { rf - px } else if px > wf - rf { px - (wf - rf) } else { 0.0 };
-            let dy = if py < rf { rf - py } else if py > hf - rf { py - (hf - rf) } else { 0.0 };
-            if dx * dx + dy * dy <= rf * rf {
-                bytes.extend_from_slice(&[r, g, b, 255]);
-            } else {
-                bytes.extend_from_slice(&[0, 0, 0, 0]);
-            }
-        }
-    }
-    Texture2D::from_rgba8(w, h, &bytes)
+fn hue_strip_texture() -> Texture2D {
+    strip_texture((0..256).map(|y| {
+        let (r, g, b) = hsv_to_rgb(y as f32 / 255.0 * 360.0, 1.0, 1.0);
+        [r, g, b, 255]
+    }))
 }
 
-fn gray_v_bar_texture(w:u16,h:u16,r:u16) -> Texture2D {
-    let mut bytes = Vec::with_capacity(w as usize * h as usize * 4);
-    let (wf, hf, rf) = (w as f32, h as f32, r as f32);
-    for y in 0..h {
-        let g =q8(1.0 - y as f32 / h as f32);
-        for x in 0..w{
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
-            let dx = if px < rf { rf - px } else if px > wf - rf { px - (wf - rf) } else { 0.0 };
-            let dy = if py < rf { rf - py } else if py > hf - rf { py - (hf - rf) } else { 0.0 };
-            if dx * dx + dy * dy <= rf * rf {
-                bytes.extend_from_slice(&[g, g, g, 255]);
-            } else {
-                bytes.extend_from_slice(&[0, 0, 0, 0]);
-            }
-        }
-    }
-    Texture2D::from_rgba8(w, h, &bytes)
+/// white at the top, black at the bottom
+fn gray_strip_texture() -> Texture2D {
+    strip_texture((0..=255u8).map(|y| [255 - y, 255 - y, 255 - y, 255]))
 }
 
-fn checker_texture(w: u16, h: u16, cell: u16) -> Texture2D {
-    let mut bytes = Vec::with_capacity(w as usize * h as usize * 4);
-    for y in 0..h {
-        for x in 0..w {
-            let c = if ((x / cell) + (y / cell)) % 2 == 0 {
-                [255, 255, 255, 255]
-            } else {
-                [158, 158, 158, 255]
-            };
-            bytes.extend_from_slice(&c);
-        }
-    }
-    Texture2D::from_rgba8(w, h, &bytes)
-}
-
-fn checker_pill_texture(w: u16, h: u16, cell: u16, r: u16) -> Texture2D {
-    let mut bytes = Vec::with_capacity(w as usize * h as usize * 4);
-    let (wf, hf, rf) = (w as f32, h as f32, r as f32);
-    for y in 0..h {
-        for x in 0..w {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
-            let dx = if px < rf { rf - px } else if px > wf - rf { px - (wf - rf) } else { 0.0 };
-            let dy = if py < rf { rf - py } else if py > hf - rf { py - (hf - rf) } else { 0.0 };
-            if dx * dx + dy * dy <= rf * rf {
-                let c = if ((x / cell) + (y / cell)) % 2 == 0 {
-                    [255, 255, 255, 255]
-                } else {
-                    [158, 158, 158, 255]
-                };
-                bytes.extend_from_slice(&c);
-            } else {
-                bytes.extend_from_slice(&[0, 0, 0, 0]);
-            }
-        }
-    }
-    Texture2D::from_rgba8(w, h, &bytes)
+/// opaque at the top, transparent at the bottom; tinted with the picked color
+fn fade_strip_texture() -> Texture2D {
+    strip_texture((0..=255u8).map(|y| [255, 255, 255, 255 - y]))
 }
 
 fn sat_overlay_texture(w: u16) -> Texture2D {
@@ -2275,9 +2181,20 @@ mod screen {
                 ); }
             true } }
 
-    pub fn frame_tick(cap_h: i32, logical_h: i32) {
+    /// Resize the window to an exact size in physical pixels, keeping its position.
+    pub fn set_window_px(w: i32, h: i32) {
+        unsafe {
+            let hwnd = find_hwnd();
+            if !hwnd.is_null() {
+                SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
+            }
+        }
+    }
+
+    pub fn frame_tick(cap_h: i32, logical_h: i32, btn_zone: i32) {
         CAP_H.store(cap_h, Ordering::Relaxed);
         LOG_H.store(logical_h, Ordering::Relaxed);
+        BTN_ZONE.store(btn_zone, Ordering::Relaxed);
         unsafe {
             let hwnd = find_hwnd();
             if !hwnd.is_null() {
@@ -2729,7 +2646,8 @@ mod screen {
     pub fn dpi_scale() -> f32 { 1.0 }
     pub fn set_topmost(_on: bool) {}
     pub fn enable_custom_frame(_cap: i32, _lh: i32, _zone: i32) -> bool { true }
-    pub fn frame_tick(_cap: i32, _lh: i32) {}
+    pub fn set_window_px(_w: i32, _h: i32) {}
+    pub fn frame_tick(_cap: i32, _lh: i32, _zone: i32) {}
     pub fn mouse_in_window() -> bool { true }
     pub fn monitor_refresh_hz() -> u32 { 60 }
     pub fn set_high_res_timer() {}
@@ -2925,84 +2843,404 @@ impl Picker {
     }
 }
 
-fn draw_slider(
-    bar: Rect,
-    label: &str,
-    value_text: &str,
-    t: f32,
-    grad: &Texture2D,
-    handle: Color,
-    end_l: Color,
-    end_r: Color,
-    checker: Option<&Texture2D>,
-) {
-    let r = (bar.h * 0.5).min(6.0);
-    let cy = bar.y + r;
+// ---------- ui kit ----------
+// every rounded shape (panels, pills, thumbs, icons, shadows) is one quad run
+// through a signed-distance shader, so edges stay crisp at any window size
 
-    draw_circle(bar.x + r, cy, r + 1.0, BG);
-    draw_circle(bar.x + bar.w - r, cy, r + 1.0, BG);
-    draw_rectangle(bar.x + r, bar.y, bar.w - 2.0 * r, bar.h, BG);
+const SHAPE_VS: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+varying mediump vec2 uv;
+varying lowp vec4 color;
+uniform mat4 Model;
+uniform mat4 Projection;
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1.0);
+    color = color0 / 255.0;
+    uv = texcoord;
+}"#;
 
-    if let Some(tex) = checker {
-        draw_texture_ex(tex, bar.x + 1.0, bar.y + 1.0, WHITE,
-                        DrawTextureParams {
-                            dest_size: Some(vec2(bar.w - 2.0 * 1.0, bar.h - 2.0 * 1.0)),
-                            ..Default::default()
-                        });
+const SHAPE_FS: &str = r#"#version 100
+precision mediump float;
+varying mediump vec2 uv;
+varying lowp vec4 color;
+uniform sampler2D Texture;
+uniform vec2 u_size;     // quad size, physical px
+uniform float u_radius;  // corner radius, px
+uniform float u_stroke;  // > 0: outline of this width instead of a fill
+uniform float u_blur;    // edge softness, px (1 = plain antialiasing)
+uniform float u_checker; // > 0: composite over a checkerboard of this cell size
+uniform vec2 u_inset;    // texture is squeezed inward by this uv fraction
+void main() {
+    vec2 p = (uv - 0.5) * u_size;
+    vec2 half_size = u_size * 0.5 - (u_blur - 1.0) * 0.5;
+    vec2 q = abs(p) - (half_size - u_radius);
+    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - u_radius;
+    float a = clamp(0.5 - d / u_blur, 0.0, 1.0);
+    if (u_stroke > 0.0) a *= clamp(0.5 + d + u_stroke, 0.0, 1.0);
+    vec2 t = clamp((uv - u_inset) / (1.0 - 2.0 * u_inset), 0.002, 0.998);
+    vec4 c = texture2D(Texture, t) * color;
+    if (u_checker > 0.0) {
+        vec2 g = floor(uv * u_size / u_checker);
+        float k = mod(g.x + g.y, 2.0);
+        c = vec4(mix(mix(vec3(1.0), vec3(0.76), k), c.rgb, c.a), 1.0);
     }
+    gl_FragColor = vec4(c.rgb, c.a * a);
+}"#;
 
-    draw_texture_ex(grad, bar.x + r, bar.y + 1.0, WHITE,
-                    DrawTextureParams {
-                        source: Some(Rect::new(r, 0.0, bar.w - 2.0 * r, 1.0)),
-                        dest_size: Some(vec2(bar.w - 2.0 * r, bar.h - 2.0 * 1.0)),
-                        ..Default::default()
-                    });
-
-    draw_circle(bar.x + r, cy, r - 1.0, end_l);
-    draw_circle(bar.x + bar.w - r, cy, r - 1.0, end_r);
-
-    draw_text(label, bar.x, bar.y - 5.0, 18.0, UI_TEXT);
-    let dims = measure_text(value_text, None, 18.0 as u16, 1.0);
-    draw_text(value_text, bar.x + bar.w - dims.width, bar.y - 5.0, 18.0, UI_TEXT);
-
-
-    let (cx, cyy) = (bar.x + r + t * (bar.w - 2.0 * r), cy);
-    draw_circle(cx, cyy, 8.0, WHITE);
-    draw_circle(cx, cyy, 6.0, handle);
-    draw_circle_lines(cx, cyy, 8.0, 1.5, BLACK);
+fn with_alpha(c: Color, a: f32) -> Color {
+    Color::new(c.r, c.g, c.b, a)
 }
 
-fn draw_lab_reference(r: Rect) {
+/// First loadable font from the OS font folders; `None` falls back to
+/// macroquad's built-in font.
+fn system_font(names: &[&str]) -> Option<Font> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(win) = std::env::var_os("WINDIR") {
+        dirs.push(std::path::PathBuf::from(win).join("Fonts"));
+    }
+    for d in ["/System/Library/Fonts/Supplemental", "/usr/share/fonts/truetype/dejavu"] {
+        dirs.push(std::path::PathBuf::from(d));
+    }
+    for dir in &dirs {
+        for name in names {
+            if let Ok(bytes) = std::fs::read(dir.join(name)) {
+                if let Ok(font) = load_ttf_font_from_bytes(&bytes) {
+                    return Some(font);
+                }
+            }
+        }
+    }
+    None
+}
+
+struct Shape<'a> {
+    radius: f32,
+    stroke: f32,
+    blur: f32,
+    checker: f32,
+    inset: Vec2,
+    tex: Option<&'a Texture2D>,
+    rot: f32,
+}
+
+impl Default for Shape<'_> {
+    fn default() -> Self {
+        Self { radius: 0.0, stroke: 0.0, blur: 0.0, checker: 0.0, inset: Vec2::ZERO, tex: None, rot: 0.0 }
+    }
+}
+
+struct Ui {
+    mat: Material,
+    font: Option<Font>,
+    bold: Option<Font>,
+    /// physical pixels per design unit
+    px: f32,
+}
+
+impl Ui {
+    fn new() -> Self {
+        let mat = load_material(
+            ShaderSource::Glsl { vertex: SHAPE_VS, fragment: SHAPE_FS },
+            MaterialParams {
+                pipeline_params: PipelineParams {
+                    color_blend: Some(BlendState::new(
+                        Equation::Add,
+                        BlendFactor::Value(BlendValue::SourceAlpha),
+                        BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+                    )),
+                    ..Default::default()
+                },
+                uniforms: vec![
+                    UniformDesc::new("u_size", UniformType::Float2),
+                    UniformDesc::new("u_radius", UniformType::Float1),
+                    UniformDesc::new("u_stroke", UniformType::Float1),
+                    UniformDesc::new("u_blur", UniformType::Float1),
+                    UniformDesc::new("u_checker", UniformType::Float1),
+                    UniformDesc::new("u_inset", UniformType::Float2),
+                ],
+                ..Default::default()
+            },
+        )
+        .expect("shape shader");
+        Self {
+            mat,
+            font: system_font(&["segoeui.ttf", "Arial.ttf", "DejaVuSans.ttf"]),
+            bold: system_font(&["seguisb.ttf", "segoeuib.ttf", "Arial Bold.ttf", "DejaVuSans-Bold.ttf"]),
+            px: 1.0,
+        }
+    }
+
+    /// Point the camera at window space measured in design units.
+    fn begin(&mut self, scale: f32) {
+        let (sw, sh) = (screen_width(), screen_height());
+        self.px = scale * screen_dpi_scale();
+        set_camera(&Camera2D {
+            target: vec2(sw * 0.5 / scale, sh * 0.5 / scale),
+            zoom: vec2(2.0 * scale / sw, 2.0 * scale / sh),
+            ..Default::default()
+        });
+    }
+
+    /// Round a design-space coordinate to the physical pixel grid.
+    fn snap(&self, v: f32) -> f32 {
+        (v * self.px).round() / self.px
+    }
+
+    fn shape(&self, r: Rect, s: Shape, color: Color) {
+        // draw_rectangle_ex runs u along the quad's height
+        let size = if s.rot != 0.0 { vec2(r.h, r.w) } else { vec2(r.w, r.h) } * self.px;
+        let stroke = if s.stroke > 0.0 { (s.stroke * self.px).max(1.0) } else { 0.0 };
+        self.mat.set_uniform("u_size", size);
+        self.mat.set_uniform("u_radius", s.radius.min(r.w.min(r.h) * 0.5) * self.px);
+        self.mat.set_uniform("u_stroke", stroke);
+        self.mat.set_uniform("u_blur", (s.blur * self.px).max(1.0));
+        self.mat.set_uniform("u_checker", s.checker * self.px);
+        self.mat.set_uniform("u_inset", s.inset);
+        gl_use_material(&self.mat);
+        match s.tex {
+            Some(t) => draw_texture_ex(t, r.x, r.y, color, DrawTextureParams {
+                dest_size: Some(vec2(r.w, r.h)),
+                ..Default::default()
+            }),
+            None if s.rot != 0.0 => draw_rectangle_ex(
+                r.x + r.w * 0.5, r.y + r.h * 0.5, r.w, r.h,
+                DrawRectangleParams { offset: vec2(0.5, 0.5), rotation: s.rot, color },
+            ),
+            None => draw_rectangle(r.x, r.y, r.w, r.h, color),
+        }
+        gl_use_default_material();
+    }
+
+    fn fill(&self, r: Rect, radius: f32, color: Color) {
+        self.shape(r, Shape { radius, ..Default::default() }, color);
+    }
+
+    fn stroke(&self, r: Rect, radius: f32, width: f32, color: Color) {
+        self.shape(r, Shape { radius, stroke: width, ..Default::default() }, color);
+    }
+
+    /// One-physical-pixel outline, however far the ui is scaled.
+    fn hair(&self, r: Rect, radius: f32, color: Color) {
+        self.stroke(r, radius, 1.0 / self.px, color);
+    }
+
+    /// Soft drop shadow under `r`.
+    fn shadow(&self, r: Rect, radius: f32, blur: f32, color: Color) {
+        let grown = Rect::new(r.x - blur * 0.5, r.y - blur * 0.5 + blur * 0.2, r.w + blur, r.h + blur);
+        self.shape(grown, Shape { radius, blur, ..Default::default() }, color);
+    }
+
+    fn tex(&self, r: Rect, radius: f32, tex: &Texture2D) {
+        self.shape(r, Shape { radius, tex: Some(tex), ..Default::default() }, WHITE);
+    }
+
+    /// `color` (with its alpha) over a transparency checkerboard.
+    fn checker(&self, r: Rect, radius: f32, cell: f32, color: Color) {
+        self.shape(r, Shape { radius, checker: cell, ..Default::default() }, color);
+    }
+
+    /// A gradient strip as a pill. The gradient spans the thumb's travel (the
+    /// pill minus its round caps), so the color under the thumb is exact.
+    fn strip(&self, r: Rect, tex: &Texture2D, checker: f32, tint: Color) {
+        let cap = r.w.min(r.h) * 0.5;
+        let inset = if r.w >= r.h { vec2(cap / r.w, 0.0) } else { vec2(0.0, cap / r.h) };
+        self.shape(r, Shape { radius: cap, tex: Some(tex), inset, checker, ..Default::default() }, tint);
+    }
+
+    fn disc(&self, c: Vec2, radius: f32, color: Color) {
+        self.fill(Rect::new(c.x - radius, c.y - radius, radius * 2.0, radius * 2.0), radius, color);
+    }
+
+    fn ring(&self, c: Vec2, radius: f32, width: f32, color: Color) {
+        self.stroke(Rect::new(c.x - radius, c.y - radius, radius * 2.0, radius * 2.0), radius, width, color);
+    }
+
+    /// Antialiased round-capped line.
+    fn line(&self, a: Vec2, b: Vec2, width: f32, color: Color) {
+        let d = b - a;
+        let len = d.length() + width;
+        let c = (a + b) * 0.5;
+        self.shape(
+            Rect::new(c.x - len * 0.5, c.y - width * 0.5, len, width),
+            Shape { radius: width * 0.5, rot: d.y.atan2(d.x) + 1e-6, ..Default::default() },
+            color,
+        );
+    }
+
+    /// One-physical-pixel axis-aligned rule.
+    fn hairline(&self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let one = 1.0 / self.px;
+        draw_rectangle(self.snap(x), self.snap(y), w.max(one), h.max(one), color);
+    }
+
+    fn thumb(&self, c: Vec2, radius: f32, fill: Color) {
+        self.disc(c, radius + 1.0, Color::new(0.0, 0.0, 0.0, 0.28));
+        self.disc(c, radius, WHITE);
+        self.disc(c, radius - 1.5, fill);
+    }
+
+    fn face(&self, bold: bool) -> Option<&Font> {
+        if bold { self.bold.as_ref().or(self.font.as_ref()) } else { self.font.as_ref() }
+    }
+
+    /// Glyphs are rasterized at the on-screen pixel size and scaled back into
+    /// design units, so text is sharp at any window scale.
+    fn raster(&self, size: f32) -> (u16, f32) {
+        let fs = (size * self.px).round().max(4.0);
+        (fs as u16, size / fs)
+    }
+
+    fn width(&self, s: &str, size: f32, bold: bool) -> f32 {
+        let (fs, k) = self.raster(size);
+        measure_text(s, self.face(bold), fs, k).width
+    }
+
+    /// Text vertically centered on `cy`; `align` 0 = starts at x, 0.5 =
+    /// centered on x, 1 = ends at x.
+    fn label(&self, s: &str, x: f32, cy: f32, size: f32, bold: bool, color: Color, align: f32) {
+        let (fs, k) = self.raster(size);
+        let font = self.face(bold);
+        let x = if align > 0.0 { x - measure_text(s, font, fs, k).width * align } else { x };
+        draw_text_ex(s, self.snap(x), self.snap(cy + size * 0.36), TextParams {
+            font,
+            font_size: fs,
+            font_scale: k,
+            color,
+            ..Default::default()
+        });
+    }
+
+    fn button(&self, r: Rect, hot: bool) {
+        self.fill(r, 4.0, if hot { SURFACE_HI } else { SURFACE });
+    }
+
+    // ----- icons (drawn, so they scale with everything else) -----
+
+    fn icon_copy(&self, c: Vec2, color: Color, bg: Color) {
+        let back = Rect::new(c.x - 2.0, c.y - 5.5, 7.5, 8.5);
+        let front = Rect::new(c.x - 5.5, c.y - 3.0, 7.5, 8.5);
+        self.stroke(back, 2.0, 1.2, color);
+        self.fill(Rect::new(front.x - 1.0, front.y - 1.0, front.w + 1.0, front.h + 1.0), 2.5, bg);
+        self.stroke(front, 2.0, 1.2, color);
+    }
+
+    fn icon_check(&self, c: Vec2, color: Color) {
+        let mid = c + vec2(-1.5, 3.5);
+        self.line(c + vec2(-5.0, 0.0), mid, 1.6, color);
+        self.line(mid, c + vec2(5.0, -3.5), 1.6, color);
+    }
+
+    fn icon_target(&self, c: Vec2, color: Color) {
+        self.ring(c, 4.5, 1.3, color);
+        self.disc(c, 1.2, color);
+        for d in [vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0)] {
+            self.line(c + d * 4.5, c + d * 7.0, 1.3, color);
+        }
+    }
+
+    fn icon_chevron(&self, c: Vec2, up: bool, color: Color) {
+        let s = if up { -1.0 } else { 1.0 };
+        let tip = c + vec2(0.0, 1.8 * s);
+        self.line(c + vec2(-3.5, -1.8 * s), tip, 1.4, color);
+        self.line(tip, c + vec2(3.5, -1.8 * s), 1.4, color);
+    }
+
+    fn icon_pin(&self, c: Vec2, color: Color) {
+        let (sin, cos) = 0.6f32.sin_cos();
+        let at = |x: f32, y: f32| c + vec2(x * cos - y * sin, x * sin + y * cos);
+        self.line(at(0.0, -5.5), at(0.0, -2.2), 4.0, color); // head
+        self.line(at(-3.8, 0.0), at(3.8, 0.0), 1.3, color);  // collar
+        self.line(at(0.0, 0.5), at(0.0, 6.5), 1.2, color);   // needle
+    }
+}
+
+fn hex_string(r: u8, g: u8, b: u8, a: u8) -> String {
+    if a == 255 {
+        format!("#{:02X}{:02X}{:02X}", r, g, b)
+    } else {
+        format!("#{:02X}{:02X}{:02X}{:02X}", r, g, b, a)
+    }
+}
+
+fn edit_char_ok(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, ',' | ' ' | '.' | '#' | '%' | '-')
+}
+
+/// Parse typed/pasted text in the active mode. `#hex` works in every mode,
+/// and a `name(...)` wrapper around the values is ignored.
+fn parse_any(mode: ColorMode, s: &str) -> Option<((f32, f32, f32), Option<f32>)> {
+    let t = s.trim();
+    if !t.is_ascii() || t.len() > 96 {
+        return None;
+    }
+    let t = t.rsplit_once('(').map_or(t, |x| x.1).trim_end_matches(')').trim();
+    if t.starts_with('#') { parse_hex(t) } else { parse_mode(mode, t) }
+}
+
+fn apply_text(mode: ColorMode, s: &str, p: &mut Picker) -> bool {
+    match parse_any(mode, s) {
+        Some((rgb, a)) => {
+            p.sync_rgb_f(rgb.0, rgb.1, rgb.2);
+            if let Some(a) = a {
+                p.alpha = a;
+            }
+            true
+        }
+        None => false,
+    }
+}
+
+/// How far one mouse-wheel notch moves a channel slider (in 0..1).
+fn chan_step(mode: ColorMode, label: &str) -> f32 {
+    match (mode, label) {
+        (_, "A") | (ColorMode::Rgba | ColorMode::Hex | ColorMode::Gray, _) => 1.0 / 255.0,
+        (_, "H") => 1.0 / 360.0,
+        _ => 0.01,
+    }
+}
+
+fn draw_slider(ui: &Ui, bar: Rect, label_x: f32, value_x: f32, ch: &ChanUi, grad: &Texture2D, hot: bool) {
+    let r = bar.h * 0.5;
+    let cy = bar.y + r;
+    ui.label(ch.label, label_x, cy, 12.0, true, TEXT_DIM, 0.0);
+    if ui.font.is_some() {
+        ui.label(&ch.value.replace("deg", "\u{b0}"), value_x, cy, 12.0, false, TEXT, 1.0);
+    } else {
+        ui.label(&ch.value, value_x, cy, 12.0, false, TEXT, 1.0);
+    }
+    ui.strip(bar, grad, if ch.label == "A" { 3.0 } else { 0.0 }, WHITE);
+    let cx = bar.x + r + clamp01(ch.t) * (bar.w - 2.0 * r);
+    ui.thumb(vec2(cx, cy), if hot { 8.0 } else { 7.0 }, ch.handle);
+}
+
+fn draw_lab_reference(ui: &Ui, r: Rect) {
     let to_screen = |x: f64, y: f64| vec2(
         r.x + lab_img_u(x) * r.w,
         r.y + (1.0 - lab_img_v(y)) * r.h,
     );
 
-    let axis = Color::new(1.0, 1.0, 1.0, 0.55);
-    let tick_txt = Color::new(1.0, 1.0, 1.0, 0.80);
-    draw_line(r.x, r.y + r.h, r.x + r.w, r.y + r.h, 1.0, axis);
-    draw_line(r.x, r.y, r.x, r.y + r.h, 1.0, axis);
+    let axis = Color::new(1.0, 1.0, 1.0, 0.45);
+    let tick_txt = Color::new(1.0, 1.0, 1.0, 0.70);
+    ui.hairline(r.x, r.y + r.h, r.w, 0.0, axis);
+    ui.hairline(r.x, r.y, 0.0, r.h, axis);
     for i in 1..8 {
         let gx = 0.1 * i as f64;
         if gx > LAB_IMG_X_MIN && gx < LAB_IMG_X_MAX {
             let lx = r.x + lab_img_u(gx) * r.w;
-            draw_line(lx, r.y + r.h, lx, r.y + r.h + 3.0, 1.0, axis);
-            let t = format!("{:.1}", gx);
-            let tw = measure_text(&t, None, 9.0 as u16, 1.0).width;
-            draw_text(&t, lx - tw * 0.5, r.y + r.h + 13.0, 9.0, tick_txt);
+            ui.hairline(lx, r.y + r.h, 0.0, 3.0, axis);
+            ui.label(&format!("{:.1}", gx), lx, r.y + r.h + 9.0, 8.5, false, tick_txt, 0.5);
         }
     }
     for i in 1..9 {
         let gy = 0.1 * i as f64;
         if gy > LAB_IMG_Y_MIN && gy < LAB_IMG_Y_MAX {
             let ly = r.y + (1.0 - lab_img_v(gy)) * r.h;
-            draw_line(r.x - 3.0, ly, r.x, ly, 1.0, axis);
-            let t = format!("{:.1}", gy);
-            let tw = measure_text(&t, None, 9.0 as u16, 1.0).width;
-            draw_text(&t, r.x - 5.0 - tw, ly + 3.0, 9.0, tick_txt);
+            ui.hairline(r.x - 3.0, ly, 3.0, 0.0, axis);
+            ui.label(&format!("{:.1}", gy), r.x - 5.0, ly, 8.5, false, tick_txt, 1.0);
         }
     }
-
 
     let pts: Vec<Vec2> = SPECTRAL_LOCUS
         .iter()
@@ -3010,93 +3248,107 @@ fn draw_lab_reference(r: Rect) {
         .collect();
     let outline = Color::new(1.0, 1.0, 1.0, 0.85);
     for i in 0..pts.len() {
-        let a = pts[i];
-        let b = pts[(i + 1) % pts.len()];
-        draw_line(a.x, a.y, b.x, b.y, 1.0, outline);
+        ui.line(pts[i], pts[(i + 1) % pts.len()], 1.0, outline);
     }
     let white = to_screen(0.3127, 0.3290);
-    for nm in [380.0f64, 460.0, 470.0, 480.0, 490.0, 500.0, 520.0, 540.0,
-               560.0, 580.0, 600.0, 620.0, 700.0] {
+    for nm in [470.0f64, 480.0, 520.0, 540.0, 560.0, 580.0, 600.0, 620.0, 700.0] {
         let p = match SPECTRAL_LOCUS.iter().find(|p| p.0 == nm) {
             Some(p) => p,
             None => continue,
         };
         let sp = to_screen(p.1, p.2);
-        let d = (sp - white).normalize_or_zero();
-        let lp = sp + d * 13.0;
-        let t = format!("{}", nm as i32);
-        let tw = measure_text(&t, None, 9.0 as u16, 1.0).width;
-        draw_text(&t, lp.x - tw * 0.5, lp.y + 3.0, 9.0,
-                  Color::new(1.0, 0.45, 0.32, 0.95));
+        let lp = sp + (sp - white).normalize_or_zero() * 11.0;
+        ui.label(&format!("{}", nm as i32), lp.x, lp.y, 8.5, false,
+                 Color::new(1.0, 0.55, 0.42, 0.95), 0.5);
     }
 }
-fn draw_uv_reference(sv: Rect, range: f32, u_label: &str, v_label: &str) {
+
+fn draw_uv_reference(ui: &Ui, sv: Rect, range: f32, u_label: &str, v_label: &str) {
     let cx = sv.x + sv.w * 0.5;
     let cy = sv.y + sv.h * 0.5;
-    let line = Color::new(1.0, 1.0, 1.0, 0.85);
-    draw_line(sv.x, cy, sv.x + sv.w, cy, 1.0, line); // V = 0
-    draw_line(cx, sv.y, cx, sv.y + sv.h, 1.0, line); // U = 0
+    let line = Color::new(1.0, 1.0, 1.0, 0.75);
+    ui.hairline(sv.x, cy, sv.w, 0.0, line); // V = 0
+    ui.hairline(cx, sv.y, 0.0, sv.h, line); // U = 0
 
     let step = sv.w * (0.1 / (range * 2.0));
     let n = (range / 0.1) as i32;
-    let tick = Color::new(1.0, 1.0, 1.0, 0.8);
     let lbl = Color::new(1.0, 1.0, 1.0, 0.9);
     for k in 1..=n {
         let d = k as f32 * step;
-        draw_line(cx + d, cy - 2.5, cx + d, cy + 2.5, 1.0, tick);
-        draw_line(cx - d, cy - 2.5, cx - d, cy + 2.5, 1.0, tick);
-        draw_line(cx - 2.5, cy - d, cx + 2.5, cy - d, 1.0, tick);
-        draw_line(cx - 2.5, cy + d, cx + 2.5, cy + d, 1.0, tick);
+        ui.hairline(cx + d, cy - 2.5, 0.0, 5.0, line);
+        ui.hairline(cx - d, cy - 2.5, 0.0, 5.0, line);
+        ui.hairline(cx - 2.5, cy - d, 5.0, 0.0, line);
+        ui.hairline(cx - 2.5, cy + d, 5.0, 0.0, line);
         let tp = format!("+.{k}");
         let tm = format!("-.{k}");
-        let tw = measure_text(&tp, None, 8.0 as u16, 1.0).width;
-        let twm = measure_text(&tm, None, 8.0 as u16, 1.0).width;
-        draw_text(&tp, cx + d - tw * 0.5, cy + 11.0, 8.0, lbl);
-        draw_text(&tm, cx - d - twm * 0.5, cy + 11.0, 8.0, lbl);
-        draw_text(&tp, cx + 4.0, cy - d + 3.0, 8.0, lbl);
-        draw_text(&tm, cx + 4.0, cy + d + 3.0, 8.0, lbl);
+        ui.label(&tp, cx + d, cy + 9.0, 8.0, false, lbl, 0.5);
+        ui.label(&tm, cx - d, cy + 9.0, 8.0, false, lbl, 0.5);
+        ui.label(&tp, cx + 5.0, cy - d, 8.0, false, lbl, 0.0);
+        ui.label(&tm, cx + 5.0, cy + d, 8.0, false, lbl, 0.0);
     }
-    draw_text(u_label, sv.x + sv.w - 11.0, cy - 4.0, 9.0, lbl);
-    draw_text(v_label, cx + 5.0, sv.y + 10.0, 9.0, lbl);
+    ui.label(u_label, sv.x + sv.w - 6.0, cy - 8.0, 9.5, true, lbl, 1.0);
+    ui.label(v_label, cx - 6.0, sv.y + 9.0, 9.5, true, lbl, 1.0);
 }
 
 #[macroquad::main(conf)]
 async fn main() {
 
-    let dpi = screen::dpi_scale();
-    if dpi > 1.0 {
-        request_new_screen_size(WINDOW_W * dpi, WINDOW_H * dpi);
-    }
+    let mut ui = Ui::new();
 
     let mut picker = Picker::new();
+    let mut mode = ColorMode::Rgba;
+    let mut on_top = false;
+    if let Some(st) = load_state() {
+        mode = st.mode;
+        on_top = st.on_top;
+        picker.sync_hsv(st.rgba.0, st.rgba.1, st.rgba.2);
+        picker.alpha = st.rgba.3 as f32 / 255.0;
+    }
+    let mut persisted = Saved { mode, rgba: (0, 0, 0, 0), on_top };
+    let mut top_applied = !on_top;
+
     let mut active: Option<Widget> = None;
-    let mut copied_at: f64 = f64::NEG_INFINITY;
     let mut picking = false;
     let mut saved_picker: Option<Picker> = None;
     let mut last_nudge: f64 = 0.0;
 
     let mut editing = false;
     let mut edit_buf = String::new();
-    let mut last_backspace: f64 = 0.0;
-    let mut bad_edit_at: f64 = f64::NEG_INFINITY;
+    // right after opening, the whole value is "selected": typing replaces it
+    let mut edit_fresh = false;
+    let mut next_backspace: f64 = 0.0;
+    let mut bad_at: f64 = f64::NEG_INFINITY;
+    // which copy button shows its checkmark (1 = values, 2 = hex), and since when
+    let mut copied: (u8, f64) = (0, f64::NEG_INFINITY);
 
-    let mut mode = ColorMode::Rgba;
     let mut dd_open = false;
-    let mut on_top = false;
-    let mut hints_vis = load_hints();
+    let mut tip_text: &'static str = "";
+    let mut tip_since: f64 = 0.0;
+    let mut cursor_now = CursorIcon::Default;
 
     let mut swatches: [Option<(u8, u8, u8, u8)>; 8] = load_swatches();
 
     let mut styled = screen::apply_win11_style(TITLE_CAPTION_BGR);
     let mut framed = false;
     let mut iconed = screen::set_window_icons();
-    let lab_img = Texture2D::from_rgba8(LAB_TEX_W, LAB_TEX_H, &lab_diagram_bytes(LAB_TEX_W, LAB_TEX_H));
-    lab_img.set_filter(FilterMode::Linear);
+    // the CIE diagram is slow to rasterize, so it's built the first time a mode shows it
+    let mut lab_img: Option<Texture2D> = None;
+    let icon_tex = {
+        let img = image::load_from_memory(include_bytes!("../assets/icon.png"))
+            .expect("Failed to load icon")
+            .to_rgba8();
+        let img = image::imageops::resize(&img, 40, 40, image::imageops::FilterType::Lanczos3);
+        let t = Texture2D::from_rgba8(40, 40, &img.into_raw());
+        t.set_filter(FilterMode::Linear);
+        t
+    };
 
-    let hue_tex = hue_bar_texture(24, 260, 12);
+    let hue_tex = hue_strip_texture();
+    let gray_tex = gray_strip_texture();
+    let fade_tex = fade_strip_texture();
     let sat_tex = sat_overlay_texture(260);
     let val_tex = val_overlay_texture(260);
-    let mut hsl_sq = Texture2D::from_rgba8(260, 260, &hsl_square_bytes(picker.hue));
+    let hsl_sq = Texture2D::from_rgba8(260, 260, &hsl_square_bytes(picker.hue));
     hsl_sq.set_filter(FilterMode::Linear);
     let mut hsl_sq_hue = picker.hue;
     let gray_sq = Texture2D::from_rgba8(260, 260, &gray_square_bytes());
@@ -3107,16 +3359,6 @@ async fn main() {
     let mut plane_key = (u8::MAX, f32::MAX, f32::MAX);
     let mut plane_pos_mode = ColorMode::Rgba;
     let mut plane_pos_key = (u8::MAX, u8::MAX, u8::MAX, u8::MAX);
-    let gray_v_bar = gray_v_bar_texture(24, 260, 12);
-    let checker_alpha = checker_pill_texture(24, 260, 6, 12);
-    let checker_preview = checker_texture(144.0 as u16, 72.0 as u16, 8.0 as u16);
-    let checker_slider = checker_pill_texture(144, 12, 4, 6);
-    let pill_pick = pill_texture(100.0 as u16, 20.0 as u16, 6.0 as u16);
-    let pill_edit = pill_texture(48.0 as u16, 18.0 as u16, 6.0 as u16);
-    let pill_dd = pill_texture(52.0 as u16, 18.0 as u16, 6.0 as u16);
-    let pill_top = pill_texture(50.0 as u16, 18.0 as u16, 6.0 as u16);
-    let pill_input = pill_texture(148.0 as u16, 18.0 as u16, 6.0 as u16);
-    let pill_hints = pill_texture(70.0 as u16, 16.0 as u16, 6.0 as u16);
     let chan_w = 144.0 as u16;
     let chan_tex: [Texture2D; 4] = [
         Texture2D::from_rgba8(chan_w, 1, &vec![0u8; chan_w as usize * 4]),
@@ -3127,74 +3369,93 @@ async fn main() {
     for t in &chan_tex {
         t.set_filter(FilterMode::Linear);
     }
-    let ag_w = 22.0 as u16;
-    let ag_h = 258.0 as u16;
-    let alpha_grad = Texture2D::from_rgba8(ag_w, ag_h, &vec![0u8; ag_w as usize * ag_h as usize * 4]);
-    alpha_grad.set_filter(FilterMode::Linear);
     let mut chans = mode_sliders(mode, &picker);
     let mut last_key = [i64::MIN; 39];
     screen::set_high_res_timer();
     let refresh_hz = screen::monitor_refresh_hz().max(30) as f64;
     loop {
         let frame_start = get_time();
+        let now = frame_start;
         clear_background(BG);
 
         if !styled {
             styled = screen::apply_win11_style(TITLE_CAPTION_BGR);
         }
-        if !framed {
-            framed = screen::enable_custom_frame(
-                TITLE_BAR_H as i32,
-                WINDOW_H as i32,
-                (TITLE_BTN_W * 3.0) as i32,
-            );
-        }
         if !iconed {
             iconed = screen::set_window_icons();
         }
         let (sw, sh) = (screen_width(), screen_height());
-        screen::frame_tick(TITLE_BAR_H as i32, sh as i32);
-        let scale = (sw / DESIGN_W).min(sh / DESIGN_H);
-        let off = vec2(
-            (sw - DESIGN_W * scale) * 0.5,
-            (sh - DESIGN_H * scale) * 0.5,
+        let scale = (sw / CONTENT_W).min(sh / (TITLE_H + CONTENT_H)).max(0.05);
+        // title bar metrics in logical screen px, for native drag/resize hit-testing
+        let cap_px = (TITLE_H * scale) as i32;
+        let zone_px = (TITLE_BTN_W * 4.0 * scale) as i32;
+        if !framed {
+            framed = screen::enable_custom_frame(cap_px, sh as i32, zone_px);
+            if framed {
+                // the frame is all client area now: size it to the design canvas exactly
+                let dpi = screen::dpi_scale();
+                screen::set_window_px((WINDOW_W * dpi).round() as i32, (WINDOW_H * dpi).round() as i32);
+            }
+        }
+        if framed && !top_applied {
+            screen::set_topmost(on_top);
+            top_applied = true;
+        }
+        screen::frame_tick(cap_px, sh as i32, zone_px);
+        ui.begin(scale);
+
+        // window size in design units; the content block is centered below the title bar
+        let (vw, vh) = (sw / scale, sh / scale);
+        let o = vec2(
+            ui.snap((vw - CONTENT_W) * 0.5),
+            ui.snap(TITLE_H + (vh - TITLE_H - CONTENT_H) * 0.5),
         );
-        set_camera(&Camera2D {
-            target: vec2(DESIGN_W * 0.5, DESIGN_H * 0.5),
-            zoom: vec2(2.0 * scale / sw, 2.0 * scale / sh),
-            ..Default::default()
-        });
+        let at = |x: f32, y: f32, w: f32, h: f32| Rect::new(o.x + x, o.y + y, w, h);
+
         let (mx, my) = mouse_position();
-        let mx = (mx - off.x) / scale;
-        let my = (my - off.y) / scale;
         let m = if screen::mouse_in_window()
             || is_mouse_button_down(MouseButton::Left)
             || is_mouse_button_down(MouseButton::Right)
         {
-            Vec2::new(mx, my)
+            Vec2::new(mx / scale, my / scale)
         } else {
             Vec2::new(-1.0e6, -1.0e6)
         };
+        let pressed = is_mouse_button_pressed(MouseButton::Left);
+        let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
+        let mut cursor = CursorIcon::Default;
+        let mut tip: Option<(&'static str, Rect)> = None;
 
-        let sv = Rect::new(20.0, TITLE_BAR_H + 20.0, 260.0, 260.0);
-        // LAB block: largest diagram-aspect rect centered in the square
-        let lab_rect = fit_rect(sv, LAB_TEX_W as f32, LAB_TEX_H as f32);
-        let hue_bar = Rect::new(296.0, TITLE_BAR_H + 20.0, 24.0, 260.0);
-        let alpha_bar = Rect::new(336.0, TITLE_BAR_H + 20.0, 24.0, 260.0);
-        let preview = Rect::new(376.0, TITLE_BAR_H + 20.0, 144.0, 72.0);
-        let bars = [
-            Rect::new(376.0, TITLE_BAR_H + 118.0, 144.0, 12.0),
-            Rect::new(376.0, TITLE_BAR_H + 150.0, 144.0, 12.0),
-            Rect::new(376.0, TITLE_BAR_H + 182.0, 144.0, 12.0),
-            Rect::new(376.0, TITLE_BAR_H + 214.0, 144.0, 12.0),
-        ];
+        // ----- layout -----
+        let sv = at(14.0, 14.0, 232.0, 232.0);
+        // CIE diagram: largest diagram-aspect rect that leaves room for its axis labels
+        let lab_rect = fit_rect(
+            Rect::new(sv.x + 26.0, sv.y + 16.0, sv.w - 42.0, sv.h - 34.0),
+            LAB_TEX_W as f32, LAB_TEX_H as f32,
+        );
+        let hue_bar = at(256.0, 14.0, 16.0, 232.0);
+        let alpha_bar = at(280.0, 14.0, 16.0, 232.0);
+        let preview = at(310.0, 14.0, 196.0, 52.0);
+        let mode_btn = at(310.0, 74.0, 196.0, 26.0);
+        let bars: [Rect; 4] = std::array::from_fn(|i| at(330.0, 119.0 + i as f32 * 24.0, 118.0, 10.0));
+        let val_field = at(14.0, 256.0, 282.0, 28.0);
+        let hex_field = at(310.0, 256.0, 114.0, 28.0);
+        let pick_btn = at(432.0, 256.0, 74.0, 28.0);
+        // thumb travel along a vertical bar / a channel slider, as 0..1
+        let bar_t = |bar: Rect| {
+            let cap = bar.w * 0.5;
+            clamp01((m.y - bar.y - cap) / (bar.h - 2.0 * cap))
+        };
+        let chan_t = |bar: Rect| {
+            let cap = bar.h * 0.5;
+            clamp01((m.x - bar.x - cap) / (bar.w - 2.0 * cap))
+        };
 
         // ------- screen-pick mode ----------(alr)
         let was_picking = picking;
         if picking {
             let (mut gx, mut gy) = screen::cursor();
-            let t = get_time();
-            if t - last_nudge > 0.05 {
+            if now - last_nudge > 0.05 {
                 let (nx, ny) = (gx, gy);
                 if is_key_down(KeyCode::Left) { gx -= 1; }
                 if is_key_down(KeyCode::Right) { gx += 1; }
@@ -3202,7 +3463,7 @@ async fn main() {
                 if is_key_down(KeyCode::Down) { gy += 1; }
                 if (gx, gy) != (nx, ny) {
                     screen::set_cursor(gx, gy);
-                    last_nudge = t;
+                    last_nudge = now;
                 }
             }
 
@@ -3217,16 +3478,11 @@ async fn main() {
                 let p = screen::region(cx, cy, 1, 1);
                 picker.sync_hsv(p[0], p[1], p[2]);
                 let (pr, pg, pb) = picker.rgb();
-                macroquad::miniquad::window::clipboard_set(
-                    &format!("#{:02X}{:02X}{:02X}", pr, pg, pb),
-                );
-                copied_at = get_time();
+                clipboard_set(&format!("#{:02X}{:02X}{:02X}", pr, pg, pb));
+                copied = (2, now);
                 picking = false;
                 screen::stop_pick();
                 screen::overlay_hide();
-                macroquad::miniquad::window::set_mouse_cursor(
-                    macroquad::miniquad::CursorIcon::Default,
-                );
             } else if is_key_pressed(KeyCode::Escape) {
                 if let Some(p) = saved_picker {
                     picker = p;
@@ -3234,45 +3490,107 @@ async fn main() {
                 picking = false;
                 screen::stop_pick();
                 screen::overlay_hide();
-                macroquad::miniquad::window::set_mouse_cursor(
-                    macroquad::miniquad::CursorIcon::Default,
-                ); } }
+            }
+        }
+        let start_pick = |picker: &Picker, saved: &mut Option<Picker>| {
+            *saved = Some(*picker);
+            screen::start_pick();
+            screen::overlay_show();
+        };
 
         // -------- text edit mode ----------
         if editing {
             while let Some(ch) = get_char_pressed() {
-                if ch.is_ascii_alphanumeric()
-                    || matches!(ch, ',' | ' ' | '.' | '#' | '%' | '-')
-                {
+                if edit_char_ok(ch) && edit_buf.len() < 48 {
+                    if edit_fresh {
+                        edit_buf.clear();
+                        edit_fresh = false;
+                    }
                     edit_buf.push(ch);
                 }
             }
-            if is_key_down(KeyCode::Backspace) && get_time() - last_backspace > 0.12 {
+            if ctrl && is_key_pressed(KeyCode::A) {
+                edit_fresh = true;
+            }
+            if ctrl && is_key_pressed(KeyCode::V) {
+                if let Some(clip) = clipboard_get() {
+                    let clip = clip.trim();
+                    let inner = clip.rsplit_once('(').map_or(clip, |x| x.1);
+                    let s: String = inner.chars().filter(|c| edit_char_ok(*c)).take(48).collect();
+                    if !s.is_empty() {
+                        edit_buf = s;
+                        edit_fresh = false;
+                    }
+                }
+            }
+            if is_key_pressed(KeyCode::Backspace) {
+                if edit_fresh { edit_buf.clear(); } else { edit_buf.pop(); }
+                edit_fresh = false;
+                next_backspace = now + 0.4; // pause before auto-repeat
+            } else if is_key_down(KeyCode::Backspace) && now > next_backspace {
                 edit_buf.pop();
-                last_backspace = get_time();
+                next_backspace = now + 0.04;
             }
             if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
-                match parse_mode(mode, &edit_buf) {
-                    Some((rgb, a)) => {
-                        picker.sync_rgb_f(rgb.0, rgb.1, rgb.2);
-                        if let Some(a) = a { picker.alpha = a; }editing = false; }
-                    None => {
-                        bad_edit_at = get_time();
-                    } } } else if is_key_pressed(KeyCode::Escape) {
-                editing = false; } }
+                if apply_text(mode, &edit_buf, &mut picker) { editing = false; } else { bad_at = now; }
+            } else if is_key_pressed(KeyCode::Escape) {
+                editing = false;
+            } else if pressed && !hit(val_field, m, 0.0) {
+                // clicking away commits a valid value and drops an invalid one
+                apply_text(mode, &edit_buf, &mut picker);
+                editing = false;
+            }
+        } else {
+            while get_char_pressed().is_some() {} // don't let stray typing queue up
+            if !was_picking {
+                if ctrl && is_key_pressed(KeyCode::C) {
+                    clipboard_set(&mode_values(mode, &picker));
+                    copied = (1, now);
+                } else if ctrl && is_key_pressed(KeyCode::V) {
+                    let ok = clipboard_get().is_some_and(|clip| apply_text(mode, &clip, &mut picker));
+                    if !ok { bad_at = now; }
+                } else if !ctrl && is_key_pressed(KeyCode::P) {
+                    dd_open = false;
+                    picking = true;
+                    start_pick(&picker, &mut saved_picker);
+                }
+            }
+        }
 
-        if !was_picking && !editing && !dd_open
-            && is_mouse_button_pressed(MouseButton::Left) && active.is_none()
-        {
+        // nothing below reacts while the screen picker or the mode menu is up
+        let free = !was_picking && !picking && !dd_open && !editing;
+
+        if free && pressed && active.is_none() {
             active = if hit(sv, m, 0.0) { Some(Widget::SatVal)
-            } else if hit(hue_bar, m, 8.0) { Some(Widget::Hue)
-            } else if hit(alpha_bar, m, 8.0) { Some(Widget::Alpha)
-            } else if hit(bars[0], m, 10.0) { Some(Widget::Chan(0))
-            } else if hit(bars[1], m, 10.0) { Some(Widget::Chan(1))
-            } else if hit(bars[2], m, 10.0) { Some(Widget::Chan(2))
-            } else if hit(bars[3], m, 10.0) { Some(Widget::Chan(3)) } else {
-                None
-            }; }
+            } else if hit(hue_bar, m, 4.0) { Some(Widget::Hue)
+            } else if hit(alpha_bar, m, 4.0) { Some(Widget::Alpha)
+            } else {
+                (0..4).find(|i| !chans[*i].label.is_empty() && hit(bars[*i], m, 7.0)).map(Widget::Chan)
+            };
+        }
+
+        // mouse wheel: fine-step whichever slider is under the cursor
+        let wheel = mouse_wheel().1;
+        if wheel != 0.0 && free && active.is_none() {
+            let dir = wheel.signum();
+            if hit(hue_bar, m, 4.0) {
+                if mode == ColorMode::Gray {
+                    let (r, g, b) = picker.rgb_f32();
+                    let gv = clamp01((luma8(r, g, b) as f32 + dir) / 255.0);
+                    picker.sync_rgb_f(gv, gv, gv);
+                } else {
+                    picker.hue = (picker.hue - dir).clamp(0.0, 359.9999);
+                    let (r, g, b) = picker.rgb_f32();
+                    picker.keep_hsv = true;
+                    picker.sync_rgb_f(r, g, b);
+                }
+            } else if hit(alpha_bar, m, 4.0) {
+                picker.alpha = clamp01(picker.alpha + dir / 255.0);
+            } else if let Some(i) = (0..4).find(|i| !chans[*i].label.is_empty() && hit(bars[*i], m, 7.0)) {
+                let t = clamp01(chans[i].t + dir * chan_step(mode, chans[i].label));
+                set_channel(mode, i, t, &mut picker);
+            }
+        }
 
         if is_mouse_button_down(MouseButton::Left) {
             match active {
@@ -3399,22 +3717,21 @@ async fn main() {
                 }
                 Some(Widget::Hue) if mode == ColorMode::Gray => {
 
-                    let gv = 1.0 - clamp01((m.y - hue_bar.y) / hue_bar.h);
+                    let gv = 1.0 - bar_t(hue_bar);
                     picker.sync_rgb_f(gv, gv, gv);
                 }
                 Some(Widget::Hue) => {
-                    picker.hue = hue_from_t(clamp01((m.y - hue_bar.y) / hue_bar.h));
+                    picker.hue = hue_from_t(bar_t(hue_bar));
 
                     let (r, g, b) = picker.rgb_f32();
                     picker.keep_hsv = true;
                     picker.sync_rgb_f(r, g, b);
                 }
                 Some(Widget::Alpha) => {
-                    picker.alpha = clamp01(1.0 - (m.y - alpha_bar.y) / alpha_bar.h)
+                    picker.alpha = 1.0 - bar_t(alpha_bar)
                 }
                 Some(Widget::Chan(i)) => {
-                    let t = clamp01((m.x - bars[i].x) / bars[i].w);
-                    set_channel(mode, i, t, &mut picker);
+                    set_channel(mode, i, chan_t(bars[i]), &mut picker);
                 }
                 None => {}
             }
@@ -3425,6 +3742,7 @@ async fn main() {
         let (r, g, b) = picker.rgb();
         let (rf, gf, bf) = picker.rgb_f32();
         let a8 = q8(picker.alpha);
+        let opaque = Color::from_rgba(r, g, b, 255);
 
         // --------- rebuild slider UI color OR alpha changed not again... ----------
         let k10 = |v:f32| (v * 10.0) as i64;
@@ -3452,8 +3770,6 @@ async fn main() {
             for i in 0..4 {
                 chan_tex[i].update(&Image { width: chan_w, height: 1, bytes: chans[i].bytes.clone() });
             }
-            alpha_grad.update(&Image { width: ag_w, height: ag_h,
-                bytes: alpha_grad_bytes(r, g, b) });
         }
 
         let (hr, hg, hb) = hsv_to_rgb(picker.hue, 1.0, 1.0);
@@ -3522,33 +3838,39 @@ async fn main() {
                 plane_sq.update(&Image { width: 260, height: 260, bytes });
             }
         }
+
+        // ---------- color plane ----------
+        let plane_r = 4.0;
         if mode == ColorMode::Gray {
-            draw_texture_ex(&gray_sq, sv.x, sv.y, WHITE,
-                            DrawTextureParams { dest_size: Some(vec2(sv.w, sv.h)), ..Default::default() });
+            ui.tex(sv, plane_r, &gray_sq);
         } else if diagram_mode {
             // LAB/xyZ/xyY: the cie 1931 chromaticity diagram + reference lines
-            draw_texture_ex(&lab_img, lab_rect.x, lab_rect.y, WHITE,
-                            DrawTextureParams { dest_size: Some(vec2(lab_rect.w, lab_rect.h)), ..Default::default() });
-            draw_lab_reference(lab_rect);
+            ui.fill(sv, plane_r, BLACK);
+            let img = lab_img.get_or_insert_with(|| {
+                let t = Texture2D::from_rgba8(LAB_TEX_W, LAB_TEX_H, &lab_diagram_bytes(LAB_TEX_W, LAB_TEX_H));
+                t.set_filter(FilterMode::Linear);
+                t
+            });
+            ui.tex(lab_rect, 0.0, img);
+            draw_lab_reference(&ui, lab_rect);
         } else if plane_mode {
-            draw_texture_ex(&plane_sq, sv.x, sv.y, WHITE,
-                            DrawTextureParams { dest_size: Some(vec2(sv.w, sv.h)), ..Default::default() });
+            if mode == ColorMode::Munsell {
+                ui.fill(sv, plane_r, Color::from_rgba(21, 21, 20, 255)); // well behind the wheel
+            }
+            ui.tex(sv, plane_r, &plane_sq);
             if mode == ColorMode::Yuv {
-                draw_uv_reference(sv, 0.436, "U", "V");
+                draw_uv_reference(&ui, sv, 0.436, "U", "V");
             } else if mode == ColorMode::Ypbpr {
-                draw_uv_reference(sv, 0.5, "Pb", "Pr");
+                draw_uv_reference(&ui, sv, 0.5, "Pb", "Pr");
             }
         } else if hsl_mode {
-            draw_texture_ex(&hsl_sq, sv.x, sv.y, WHITE,
-                            DrawTextureParams { dest_size: Some(vec2(sv.w, sv.h)), ..Default::default() });
+            ui.tex(sv, plane_r, &hsl_sq);
         } else {
-            draw_rectangle(sv.x, sv.y, sv.w, sv.h, Color::from_rgba(hr, hg, hb, 255));
-            draw_texture_ex(&sat_tex, sv.x, sv.y, WHITE,
-                            DrawTextureParams { dest_size: Some(vec2(sv.w, sv.h)), ..Default::default() });
-            draw_texture_ex(&val_tex, sv.x, sv.y, WHITE,
-                            DrawTextureParams { dest_size: Some(vec2(sv.w, sv.h)), ..Default::default() });
+            ui.fill(sv, plane_r, Color::from_rgba(hr, hg, hb, 255));
+            ui.tex(sv, plane_r, &sat_tex);
+            ui.tex(sv, plane_r, &val_tex);
         }
-        draw_rectangle_lines(sv.x, sv.y, sv.w, sv.h, 1.0, BORDER);
+        ui.hair(sv, plane_r, STROKE);
 
         let (cx, cy) = if mode == ColorMode::Gray {
             (sv.x + (luma8(rf, gf, bf) as f32 / 255.0) * sv.w, sv.y + sv.h * 0.5)
@@ -3575,316 +3897,339 @@ async fn main() {
         } else {
             (sv.x + picker.sat * sv.w, sv.y + (1.0 - picker.val) * sv.h)
         };
-        draw_circle(cx, cy, 8.0, WHITE);
-        draw_circle(cx, cy, 6.0, Color::from_rgba(r, g, b, 255));
-        draw_circle_lines(cx, cy, 8.0, 1.5, BLACK);
+        let grab = |w: Widget, over: bool| {
+            if active == Some(w) || (free && active.is_none() && over) { 1.0 } else { 0.0 }
+        };
+        ui.thumb(vec2(cx, cy), 7.0 + grab(Widget::SatVal, false), opaque);
 
-        draw_stadium_rim(hue_bar.x, hue_bar.y, hue_bar.w, hue_bar.h, 12.0, BG);
+        // ---------- hue + alpha bars ----------
+        let cap = hue_bar.w * 0.5;
+        let travel = hue_bar.h - 2.0 * cap;
+        let hue_grab = grab(Widget::Hue, hit(hue_bar, m, 4.0));
         if mode == ColorMode::Gray {
-            draw_texture_ex(&gray_v_bar, hue_bar.x + 1.0, hue_bar.y + 1.0, WHITE,
-                            DrawTextureParams {
-                                dest_size: Some(vec2(hue_bar.w - 2.0, hue_bar.h - 2.0)),
-                                ..Default::default()
-                            });
-            let gy = hue_bar.y + 12.0 + (1.0 - luma8(rf, gf, bf) as f32 / 255.0) * (hue_bar.h - 24.0);
-            draw_circle(hue_bar.x + hue_bar.w * 0.5, gy, 9.0, WHITE);
-            draw_circle(hue_bar.x + hue_bar.w * 0.5, gy, 7.0, Color::from_rgba(r, g, b, 255));
-            draw_circle_lines(hue_bar.x + hue_bar.w * 0.5, gy, 9.0, 1.5, BLACK);
+            ui.strip(hue_bar, &gray_tex, 0.0, WHITE);
+            let gy = hue_bar.y + cap + (1.0 - luma8(rf, gf, bf) as f32 / 255.0) * travel;
+            ui.thumb(vec2(hue_bar.x + cap, gy), 8.0 + hue_grab, opaque);
         } else {
-            draw_texture_ex(&hue_tex, hue_bar.x + 1.0, hue_bar.y + 1.0, WHITE,
-                            DrawTextureParams {
-                                dest_size: Some(vec2(hue_bar.w - 2.0, hue_bar.h - 2.0)),
-                                ..Default::default()
-                            });
-            let (hx, hy) = (
-                hue_bar.x + hue_bar.w * 0.5,
-                hue_bar.y + 12.0 + picker.hue / 360.0 * (hue_bar.h - 24.0),
-            );
-            draw_circle(hx, hy, 9.0, WHITE);
-            draw_circle(hx, hy, 7.0, Color::from_rgba(hr, hg, hb, 255));
-            draw_circle_lines(hx, hy, 9.0, 1.5, BLACK);
+            ui.strip(hue_bar, &hue_tex, 0.0, WHITE);
+            let hy = hue_bar.y + cap + picker.hue / 360.0 * travel;
+            ui.thumb(vec2(hue_bar.x + cap, hy), 8.0 + hue_grab, Color::from_rgba(hr, hg, hb, 255));
         }
 
-        draw_stadium_rim(alpha_bar.x, alpha_bar.y, alpha_bar.w, alpha_bar.h, 12.0, BG);
-        draw_texture_ex(&checker_alpha, alpha_bar.x + 1.0, alpha_bar.y + 1.0, WHITE,
-                        DrawTextureParams {
-                            dest_size: Some(vec2(alpha_bar.w - 2.0, alpha_bar.h - 2.0)),
-                            ..Default::default()
-                        });
-        draw_texture(&alpha_grad, alpha_bar.x + 1.0, alpha_bar.y + 1.0, WHITE);
-        let (ax, ay) = (
-            alpha_bar.x + alpha_bar.w * 0.5,
-            alpha_bar.y + 12.0 + (1.0 - picker.alpha) * (alpha_bar.h - 24.0),
-        );
-        draw_circle(ax, ay, 9.0, WHITE);
-        draw_circle(ax, ay, 7.0, picker.color());
-        draw_circle_lines(ax, ay, 9.0, 1.5, BLACK);
+        ui.strip(alpha_bar, &fade_tex, 4.0, opaque);
+        let ay = alpha_bar.y + cap + (1.0 - picker.alpha) * travel;
+        ui.thumb(vec2(alpha_bar.x + cap, ay),
+                 8.0 + grab(Widget::Alpha, hit(alpha_bar, m, 4.0)), picker.color());
 
         // ---------- preview ----------
-        draw_texture(&checker_preview, preview.x, preview.y, WHITE);
-        draw_rectangle(preview.x, preview.y, preview.w, preview.h, picker.color());
-        draw_rectangle_lines(preview.x, preview.y, preview.w, preview.h, 1.0, BORDER);
+        ui.checker(preview, 4.0, 6.0, picker.color());
+        ui.hair(preview, 4.0, STROKE);
 
-        for i in 0..4 {
-            if chans[i].label.is_empty() {
-                continue; // unused slot (INDEX has only I + A)
-            }
-            let rr = (bars[i].h * 0.5).min(6.0);
-            let tl = rr / bars[i].w;
-            let end_l = sample_grad(&chans[i].bytes, tl);
-            let end_r = sample_grad(&chans[i].bytes, 1.0 - tl);
-            let checker = if chans[i].label == "A" {
-                Some(&checker_slider)
-            } else {
-                None
-            };
-            draw_slider(
-                bars[i], chans[i].label, &chans[i].value, chans[i].t,
-                &chan_tex[i], chans[i].handle, end_l, end_r, checker,
-            );
-        }
-
-        // ---------- click-to-copy (copies values only well u can change it if u want) ----
-        let mode_text = format_mode(mode, &picker);
-        let values_text = mode_values(mode, &picker);
-        let rd = measure_text(&mode_text, None, 26.0 as u16, 1.0);
-        let over = !was_picking && !editing && !dd_open
-            && mx >= 16.0 && mx <= 24.0 + rd.width
-            && my >= TITLE_BAR_H + 294.0 && my <= TITLE_BAR_H + 328.0;
-        let clicked = over && is_mouse_button_pressed(MouseButton::Left) && active.is_none();
-
-        if clicked { macroquad::miniquad::window::clipboard_set(&values_text);copied_at = get_time(); }
-        let copied = get_time() - copied_at < 1.0;
-        if copied { draw_text("copied", 30.0 + rd.width, TITLE_BAR_H + 324.0, 15.0, LIGHTGRAY); }
-        draw_text(&mode_text, 20.0, TITLE_BAR_H + 318.0, 26.0,
-                  if copied { Color::from_rgba(251, 255, 118, 160) }
-                  else if over { Color::from_rgba(251, 255, 118, 255) }
-                  else { UI_TEXT });
-        if over || copied { draw_rectangle(20.0, TITLE_BAR_H + 323.0, rd.width, 2.0, LIGHTGRAY); }
-        let hex_text = format!("#{:02X}{:02X}{:02X}", r, g, b);
-        let hd = measure_text(&hex_text, None, 26.0 as u16, 1.0);
-        draw_text(&hex_text, DESIGN_W - 20.0 - hd.width, TITLE_BAR_H + 318.0, 26.0, UI_TEXT);
-        if !picking {
-            let edit_btn = Rect::new(20.0, TITLE_BAR_H + 336.0, 48.0, 18.0);
-            let edit_over = hit(edit_btn, m, 0.0);
-            draw_texture(&pill_edit, edit_btn.x, edit_btn.y,
-                         if edit_over { Color::from_rgba(60, 64, 74, 255) } else { Color::from_rgba(45, 48, 56, 255) });
-            let et = measure_text(if editing { "OK" } else { "EDIT" }, None, 13.0 as u16, 1.0);
-            draw_text(if editing { "OK" } else { "EDIT" },
-                      edit_btn.x + (edit_btn.w - et.width) * 0.5, edit_btn.y + 13.5, 13.0, UI_TEXT);
-            if edit_over && is_mouse_button_pressed(MouseButton::Left) && active.is_none() {
-                dd_open = false;
-                if editing {
-                    match parse_mode(mode, &edit_buf) {
-                        Some((rgb, a)) => {
-                            picker.sync_rgb_f(rgb.0, rgb.1, rgb.2);
-                            if let Some(a) = a { picker.alpha = a; }
-                            editing = false;
-                        }
-                        None => bad_edit_at = get_time(),
-                    }
-                } else {
-                    editing = true;
-                    edit_buf = values_text.clone();
-                    last_backspace = 0.0;
-                }
-            }
-
-
-            let dd_btn = Rect::new(72.0, TITLE_BAR_H + 336.0, 52.0, 18.0);
-            let dd_over = !editing && hit(dd_btn, m, 0.0);
-            draw_texture(&pill_dd, dd_btn.x, dd_btn.y,
-                         if dd_over || dd_open { Color::from_rgba(60, 64, 74, 255) } else { Color::from_rgba(45, 48, 56, 255) });
-            let dn = mode_name(mode);
-            let dt = measure_text(dn, None, 12.0 as u16, 1.0);
-            draw_text(dn, dd_btn.x + (dd_btn.w - dt.width) * 0.5, dd_btn.y + 13.5, 12.0, UI_TEXT);
-            draw_text(if dd_open { "^" } else { "v" },
-                      dd_btn.x + dd_btn.w - 8.0, dd_btn.y + 13.0, 10.0, HINT);
-            if dd_over && is_mouse_button_pressed(MouseButton::Left) && active.is_none() {
+        // ---------- mode menu button ----------
+        let mode_hot = !was_picking && !picking && !editing && hit(mode_btn, m, 0.0);
+        ui.button(mode_btn, mode_hot || dd_open);
+        let mode_cy = mode_btn.y + mode_btn.h * 0.5;
+        ui.label("Mode", mode_btn.x + 10.0, mode_cy, 11.5, false, TEXT_DIM, 0.0);
+        ui.label(mode_name(mode), mode_btn.x + mode_btn.w - 27.0, mode_cy, 12.5, true, TEXT, 1.0);
+        ui.icon_chevron(vec2(mode_btn.x + mode_btn.w - 14.0, mode_cy), dd_open, TEXT_DIM);
+        if mode_hot {
+            cursor = CursorIcon::Pointer;
+            if pressed && active.is_none() {
                 dd_open = !dd_open;
             }
+        }
 
-            if dd_open {
-                let ih = 16.0;
-                let top = dd_btn.y - MODES.len() as f32 * ih;
-                draw_rectangle(dd_btn.x, top, 64.0, MODES.len() as f32 * ih,
-                               Color::from_rgba(24, 26, 24, 255));
-                draw_rectangle_lines(dd_btn.x, top, 64.0, MODES.len() as f32 * ih, 1.0, BORDER);
-                let mut chose = None;
-                for (i, md) in MODES.iter().enumerate() {
-                    let ry = top + i as f32 * ih;
-                    let iov = m.x >= dd_btn.x && m.x <= dd_btn.x + 64.0
-                        && m.y >= ry && m.y <= ry + ih;
-                    if iov {
-                        draw_rectangle(dd_btn.x + 1.0, ry + 1.0, 62.0, ih - 2.0,
-                                       Color::from_rgba(60, 64, 74, 255));
+        // ---------- channel sliders ----------
+        for i in 0..4 {
+            if chans[i].label.is_empty() {
+                continue; // unused slot (GRAY has only G + A)
+            }
+            let hot = grab(Widget::Chan(i), hit(bars[i], m, 7.0)) > 0.0;
+            draw_slider(&ui, bars[i], o.x + 310.0, o.x + 506.0, &chans[i], &chan_tex[i], hot);
+        }
+
+        // ---------- saved colors ----------
+        for i in 0..8usize {
+            let cell = at(310.0 + i as f32 * (176.0 / 7.0), 226.0, 20.0, 20.0);
+            let over = free && hit(cell, m, 2.0);
+            match swatches[i] {
+                Some((sr, sg, sb, sa)) => {
+                    ui.checker(cell, 10.0, 5.0, Color::from_rgba(sr, sg, sb, sa));
+                    if over { ui.hair(cell, 10.0, Color::new(1.0, 1.0, 1.0, 0.7)); }
+                }
+                None => ui.fill(cell, 10.0, if over { SURFACE_HI } else { SURFACE }),
+            }
+            if !over {
+                continue;
+            }
+            cursor = CursorIcon::Pointer;
+            tip = Some((
+                if swatches[i].is_some() { "Click: use  |  Right-click: replace  |  Middle-click: clear" }
+                else { "Click to save the current color" },
+                cell,
+            ));
+            if active.is_none() {
+                if is_mouse_button_pressed(MouseButton::Middle) {
+                    swatches[i] = None;
+                    save_swatches(&swatches);
+                } else if is_mouse_button_pressed(MouseButton::Right)
+                    || (pressed && swatches[i].is_none())
+                {
+                    swatches[i] = Some((r, g, b, a8));
+                    save_swatches(&swatches);
+                } else if pressed {
+                    if let Some((sr, sg, sb, sa)) = swatches[i] {
+                        picker.sync_hsv(sr, sg, sb);
+                        picker.alpha = sa as f32 / 255.0;
                     }
-                    let name = mode_name(*md);
-                    let nt = measure_text(name, None, 12.0 as u16, 1.0);
-                    draw_text(name, dd_btn.x + (64.0 - nt.width) * 0.5, ry + 12.5, 12.0, UI_TEXT);
-                    if iov && is_mouse_button_pressed(MouseButton::Left) {
+                }
+            }
+        }
+
+        // ---------- value field: click to type, button to copy ----------
+        let values_text = mode_values(mode, &picker);
+        let field_cy = val_field.y + val_field.h * 0.5;
+        let side_btn = Rect::new(val_field.x + val_field.w - 28.0, val_field.y, 28.0, val_field.h);
+        let field_on = !was_picking && !picking && !dd_open;
+        let over_field = field_on && hit(val_field, m, 0.0);
+        let over_side = over_field && hit(side_btn, m, 0.0);
+        let bad = now - bad_at < 0.9;
+        let field_bg = if editing { Color::from_rgba(21, 21, 20, 255) }
+            else if over_field && !over_side { SURFACE_HI } else { SURFACE };
+        ui.fill(val_field, 4.0, field_bg);
+        if bad || editing {
+            ui.hair(val_field, 4.0, if bad { DANGER } else { STROKE_HI });
+        }
+        let shown = if editing { edit_buf.clone() } else { format_mode(mode, &picker) };
+        let room = val_field.w - 10.0 - 30.0;
+        let mut fs = 13.0;
+        while fs > 9.0 && ui.width(&shown, fs, false) > room {
+            fs -= 0.5;
+        }
+        let tw = ui.width(&shown, fs, false);
+        if editing && edit_fresh && !shown.is_empty() {
+            ui.fill(Rect::new(val_field.x + 7.0, field_cy - 9.0, tw + 6.0, 18.0), 3.0, with_alpha(ACCENT, 0.22));
+        }
+        ui.label(&shown, val_field.x + 10.0, field_cy, fs, false, TEXT, 0.0);
+        if editing && !edit_fresh && (now * 2.0).fract() < 0.5 {
+            ui.hairline(val_field.x + 11.0 + tw, field_cy - 7.0, 0.0, 14.0, TEXT);
+        }
+        let side_c = vec2(side_btn.x + 14.0, field_cy);
+        if over_side {
+            ui.fill(Rect::new(side_btn.x + 3.0, side_btn.y + 3.0, 22.0, 22.0), 3.0, SURFACE_HI);
+        }
+        let side_bg = if over_side { SURFACE_HI } else { field_bg };
+        if editing {
+            ui.icon_check(side_c, ACCENT);
+        } else if copied.0 == 1 && now - copied.1 < 1.2 {
+            ui.icon_check(side_c, ACCENT);
+        } else {
+            ui.icon_copy(side_c, if over_side { TEXT } else { TEXT_DIM }, side_bg);
+        }
+        if over_side {
+            cursor = CursorIcon::Pointer;
+            tip = Some((if editing { "Apply  (Enter)" } else { "Copy values  (Ctrl+C)" }, side_btn));
+            if pressed && active.is_none() {
+                if editing {
+                    if apply_text(mode, &edit_buf, &mut picker) { editing = false; } else { bad_at = now; }
+                } else {
+                    clipboard_set(&values_text);
+                    copied = (1, now);
+                }
+            }
+        } else if over_field {
+            cursor = CursorIcon::Text;
+            if editing {
+                if pressed { edit_fresh = false; }
+            } else {
+                tip = Some(("Click to type a value  |  Ctrl+V pastes a color", val_field));
+                if pressed && active.is_none() {
+                    editing = true;
+                    edit_fresh = true;
+                    edit_buf = values_text.clone();
+                }
+            }
+        }
+
+        // ---------- hex readout (click to copy) ----------
+        let hex_text = hex_string(r, g, b, a8);
+        let hex_hot = free && hit(hex_field, m, 0.0);
+        ui.button(hex_field, hex_hot);
+        ui.label(&hex_text, hex_field.x + 10.0, field_cy, 13.0, true, TEXT, 0.0);
+        let hex_c = vec2(hex_field.x + hex_field.w - 14.0, field_cy);
+        if copied.0 == 2 && now - copied.1 < 1.2 {
+            ui.icon_check(hex_c, ACCENT);
+        } else {
+            ui.icon_copy(hex_c, if hex_hot { TEXT } else { TEXT_DIM },
+                         if hex_hot { SURFACE_HI } else { SURFACE });
+        }
+        if hex_hot {
+            cursor = CursorIcon::Pointer;
+            tip = Some(("Copy hex", hex_field));
+            if pressed && active.is_none() {
+                clipboard_set(&hex_text);
+                copied = (2, now);
+            }
+        }
+
+        // ---------- screen pick button ----------
+        let pick_hot = free && hit(pick_btn, m, 0.0);
+        ui.button(pick_btn, pick_hot);
+        let pick_w = 20.0 + ui.width("Pick", 12.0, false);
+        let pick_x = pick_btn.x + (pick_btn.w - pick_w) * 0.5;
+        ui.icon_target(vec2(pick_x + 7.0, field_cy), if pick_hot { TEXT } else { TEXT_DIM });
+        ui.label("Pick", pick_x + 20.0, field_cy, 12.0, false, TEXT, 0.0);
+        if pick_hot {
+            cursor = CursorIcon::Pointer;
+            tip = Some(("Pick a color from anywhere on screen  (P)", pick_btn));
+            if pressed && active.is_none() {
+                picking = true;
+                start_pick(&picker, &mut saved_picker);
+            }
+        }
+
+        // ---------- mode menu (drawn last so it sits above the sliders) ----------
+        if dd_open {
+            let cols = 3usize;
+            let rows = MODES.len().div_ceil(cols);
+            let (pad, cell_h) = (6.0, 26.0);
+            let pop = Rect::new(mode_btn.x, mode_btn.y + mode_btn.h + 4.0,
+                                mode_btn.w, pad * 2.0 + rows as f32 * cell_h);
+            let cell_w = (pop.w - pad * 2.0) / cols as f32;
+            ui.shadow(pop, 5.0, 20.0, Color::new(0.0, 0.0, 0.0, 0.5));
+            ui.fill(pop, 5.0, POPOVER);
+            ui.hair(pop, 5.0, STROKE_HI);
+            let mut chose = None;
+            for (i, md) in MODES.iter().enumerate() {
+                let cell = Rect::new(
+                    pop.x + pad + (i % cols) as f32 * cell_w + 1.0,
+                    pop.y + pad + (i / cols) as f32 * cell_h + 1.0,
+                    cell_w - 2.0, cell_h - 2.0,
+                );
+                let over = hit(cell, m, 0.0);
+                let current = *md == mode;
+                if current || over {
+                    ui.fill(cell, 3.0, SURFACE_HI);
+                }
+                ui.label(mode_name(*md), cell.x + cell.w * 0.5, cell.y + cell.h * 0.5, 11.5,
+                         current, if current || over { TEXT } else { TEXT_DIM }, 0.5);
+                if over {
+                    cursor = CursorIcon::Pointer;
+                    if pressed {
                         chose = Some(*md);
                     }
                 }
-                match chose {
-                    Some(md) => {
-                        mode = md;
+            }
+            match chose {
+                Some(md) => {
+                    mode = md;
+                    dd_open = false;
+                }
+                None => {
+                    let outside = !hit(pop, m, 2.0) && !hit(mode_btn, m, 0.0);
+                    if (outside && pressed) || is_key_pressed(KeyCode::Escape) {
                         dd_open = false;
                     }
-                    None => {
-                        let in_dd = m.x >= dd_btn.x - 2.0 && m.x <= dd_btn.x + 66.0 && m.y >= top - 2.0 && m.y <= dd_btn.y + dd_btn.h;
-                        if !in_dd && is_mouse_button_pressed(MouseButton::Left) && active.is_none() {
-                            dd_open = false;
+                }
+            }
+        }
+
+        // ---------- title bar ----------
+        ui.hairline(0.0, TITLE_H, vw, 0.0, Color::new(1.0, 1.0, 1.0, 0.06));
+        let title_cy = TITLE_H * 0.5;
+        draw_texture_ex(&icon_tex, 8.0, title_cy - 10.0, WHITE,
+                        DrawTextureParams { dest_size: Some(vec2(20.0, 20.0)), ..Default::default() });
+        ui.label(TITLE_TEXT, 33.0, title_cy, 12.5, true, TEXT, 0.0);
+        let title_w = ui.width(TITLE_TEXT, 12.5, true);
+        ui.label("v1.0.0", 33.0 + title_w + 8.0, title_cy + 0.5, 11.0, false, with_alpha(TEXT_DIM, 0.6), 0.0);
+
+        let maxed = screen::is_maximized();
+        for kind in 0..4u8 {
+            let rect = Rect::new(vw - (4 - kind) as f32 * TITLE_BTN_W, 0.0, TITLE_BTN_W, TITLE_H);
+            let hov = !was_picking && !picking && hit(rect, m, 0.0);
+            let c = vec2(rect.x + rect.w * 0.5, title_cy);
+            if hov {
+                let bg = if kind == 3 { Color::from_rgba(196, 43, 28, 255) } else { Color::new(1.0, 1.0, 1.0, 0.09) };
+                draw_rectangle(rect.x, rect.y, rect.w, rect.h, bg);
+            }
+            let ink = if hov { WHITE } else { TEXT_DIM };
+            match kind {
+                0 => {
+                    ui.icon_pin(c + vec2(1.0, 0.0), if on_top { ACCENT } else { with_alpha(ink, 0.55) });
+                }
+                1 => ui.line(c - vec2(4.5, 0.0), c + vec2(4.5, 0.0), 1.2, ink),
+                2 => {
+                    if maxed {
+                        ui.stroke(Rect::new(c.x - 2.5, c.y - 5.5, 8.0, 8.0), 1.5, 1.2, ink);
+                        let front = Rect::new(c.x - 5.5, c.y - 2.5, 8.0, 8.0);
+                        ui.fill(front, 1.5, if hov { Color::from_rgba(50, 50, 48, 255) } else { BG });
+                        ui.stroke(front, 1.5, 1.2, ink);
+                    } else {
+                        ui.stroke(Rect::new(c.x - 4.5, c.y - 4.5, 9.0, 9.0), 1.5, 1.2, ink);
+                    }
+                }
+                _ => {
+                    ui.line(c - vec2(4.0, 4.0), c + vec2(4.0, 4.0), 1.2, ink);
+                    ui.line(c + vec2(-4.0, 4.0), c + vec2(4.0, -4.0), 1.2, ink);
+                }
+            }
+            if hov {
+                if kind == 0 {
+                    tip = Some((if on_top { "Always on top: on" } else { "Keep window on top" }, rect));
+                }
+                if pressed && active.is_none() {
+                    match kind {
+                        0 => {
+                            on_top = !on_top;
+                            screen::set_topmost(on_top);
                         }
+                        1 => screen::minimize_window(),
+                        2 => screen::toggle_maximize_window(),
+                        _ => screen::close_window(),
                     }
                 }
             }
+        }
 
-            // ----- ON TOP toggle -----
-            let top_btn = Rect::new(128.0, TITLE_BAR_H + 336.0, 50.0, 18.0);
-            let top_over = !editing && !dd_open && hit(top_btn, m, 0.0);
-            draw_texture(&pill_top, top_btn.x, top_btn.y,
-                         if on_top {
-                             WHITE
-                         } else if top_over {
-                             Color::from_rgba(60, 64, 74, 255)
-                         } else {
-                             Color::from_rgba(45, 48, 56, 255)
-                         });
-            let tt = measure_text("ON TOP", None, 10.0 as u16, 1.0);
-            draw_text("ON TOP",
-                      top_btn.x + (top_btn.w - tt.width) * 0.5, top_btn.y + 12.5, 10.0,
-                      if on_top { Color::from_rgba(110, 112, 108, 255) } else { UI_TEXT });
-            if top_over && is_mouse_button_pressed(MouseButton::Left) && active.is_none() {
-                on_top = !on_top;
-                screen::set_topmost(on_top);
-            }
-
-            // ----- edit input box -----
-            if editing {
-                let box_r = Rect::new(182.0, TITLE_BAR_H + 336.0, 148.0, 18.0);
-                draw_texture(&pill_input, box_r.x, box_r.y, Color::from_rgba(24, 26, 24, 255));
-                let bd = measure_text(&edit_buf, None, 15.0 as u16, 1.0);
-                draw_text(&edit_buf, box_r.x + 8.0, box_r.y + 13.5, 15.0, UI_TEXT);
-                if (get_time() * 2.0).fract() < 0.5 {
-                    draw_rectangle(box_r.x + 9.0 + bd.width, box_r.y + 4.0, 1.0, 11.0, UI_TEXT);
+        // ---------- tooltip ----------
+        match tip {
+            Some((text, anchor)) if !is_mouse_button_down(MouseButton::Left) => {
+                if tip_text != text {
+                    tip_text = text;
+                    tip_since = now;
                 }
-                if get_time() - bad_edit_at < 1.0 {
-                    draw_text("invalid", box_r.x + box_r.w - 52.0, box_r.y + 13.5, 13.0,
-                              Color::from_rgba(255, 120, 90, 255)); }
-                draw_text("Enter: apply | Esc: cancel", box_r.x, TITLE_BAR_H + 324.0, 11.0, HINT); } }
+                if now - tip_since > 0.55 {
+                    let w = ui.width(text, 11.5, false) + 16.0;
+                    let h = 22.0;
+                    let x = (anchor.x + anchor.w * 0.5 - w * 0.5).clamp(6.0, (vw - w - 6.0).max(6.0));
+                    let mut y = anchor.y + anchor.h + 6.0;
+                    if y + h > vh - 4.0 {
+                        y = anchor.y - h - 6.0;
+                    }
+                    let tr = Rect::new(ui.snap(x), ui.snap(y), w, h);
+                    ui.fill(tr, 3.0, Color::from_rgba(62, 62, 58, 255));
+                    ui.label(text, tr.x + 8.0, tr.y + h * 0.5, 11.5, false, TEXT, 0.0);
+                }
+            }
+            _ => tip_text = "",
+        }
 
+        if picking {
+            cursor = CursorIcon::Crosshair;
+        }
+        if cursor != cursor_now {
+            cursor_now = cursor;
+            set_mouse_cursor(cursor);
+        }
 
-        let ui_free = !picking && !was_picking && !editing && !dd_open;
-        for i in 0..8usize {
-            let col = i % 4;
-            let row = i / 4;
-            let swx = 336.0 + col as f32 * 21.0;
-            let swy = TITLE_BAR_H + if row == 0 { 315.0 } else { 336.0 };
-            let (ccx, ccy) = (swx + 8.0, swy + 8.0);
-            let over = ui_free
-                && m.x >= swx - 2.0 && m.x <= swx + 18.0
-                && m.y >= swy - 2.0 && m.y <= swy + 18.0;
-
-            match swatches[i] {
-                Some((sr, sg, sb, _sa)) => {
-                    draw_circle(ccx, ccy, 8.0, Color::from_rgba(sr, sg, sb, 255)); }
-                None => { draw_circle(ccx, ccy, 8.0, Color::from_rgba(45, 48, 56, 255)); } }
-            draw_circle_lines(ccx, ccy, 8.0, 1.0, if over { WHITE } else { BORDER });
-
-            if over && is_mouse_button_pressed(MouseButton::Left) && active.is_none() { swatches[i] = Some((r, g, b, a8));
-                save_swatches(&swatches); }
-            if over && is_mouse_button_pressed(MouseButton::Right) {
-                if let Some((sr, sg, sb, sa)) = swatches[i] {
-                    picker.sync_hsv(sr, sg, sb);picker.alpha = sa as f32 / 255.0; } } }
-
-        // ---------- hints (click to hide) ---------
-        let hint_defs: [(&str, f32, f32, f32); 4] = [
-            ("C - print to console (useless)", 376.0, TITLE_BAR_H + 254.0, 14.0),
-            ("click rgba to copy", 376.0, TITLE_BAR_H + 274.0, 14.0),
-            ("click a hint to hide", 376.0, TITLE_BAR_H + 294.0, 14.0),
-            ("L-click: save | R-click: apply", 336.0, TITLE_BAR_H + 359.0, 10.0),
-        ];
-        for i in 0..4 {
-            if !hints_vis[i] { continue; }
-            let (txt, hxp, hyp, hfs) = hint_defs[i];
-            let ht = measure_text(txt, None, hfs as u16, 1.0);
-            draw_text(txt, hxp, hyp, hfs, HINT);
-            let hov = ui_free
-                && m.x >= hxp - 2.0 && m.x <= hxp + ht.width + 2.0
-                && m.y >= hyp - hfs && m.y <= hyp + 4.0;
-            if hov {
-                draw_rectangle(hxp, hyp + 3.0, ht.width, 1.0, Color::new(0.55, 0.57, 0.62, 0.6));
-                if is_mouse_button_pressed(MouseButton::Left) && active.is_none() {
-                    hints_vis[i] = false;
-                    save_hints(&hints_vis); } }
-        }if hints_vis.iter().any(|v| !*v) {
-            let hb = Rect::new(376.0, TITLE_BAR_H + 232.0, 70.0, 16.0);
-            let hov = ui_free && hit(hb, m, 0.0);
-            draw_texture(&pill_hints, hb.x, hb.y,
-                         if hov { Color::from_rgba(60, 64, 74, 255) } else { Color::from_rgba(45, 48, 56, 255) });
-            let st = measure_text("show hints", None, 10.0 as u16, 1.0);
-            draw_text("show hints", hb.x + (hb.w - st.width) * 0.5, hb.y + 12.0, 10.0, UI_TEXT);
-            if hov && is_mouse_button_pressed(MouseButton::Left) && active.is_none() {
-                hints_vis = [true; 4];
-                save_hints(&hints_vis); } }
-        // ---------- screen pick button ----------
-        let pick_btn = Rect::new(420.0, TITLE_BAR_H + 334.0, 100.0, 20.0);
-        let pick_over = !picking && !was_picking && !editing && !dd_open && hit(pick_btn, m, 0.0);
-        draw_texture(&pill_pick, pick_btn.x, pick_btn.y,
-                     if pick_over { Color::from_rgba(60, 64, 74, 255) } else { Color::from_rgba(45, 48, 56, 255) });
-        let pt = measure_text("PICK SCREEN", None, 14.0 as u16, 1.0);
-        draw_text("PICK SCREEN", pick_btn.x + (pick_btn.w - pt.width) * 0.5, pick_btn.y + 15.0, 14.0, UI_TEXT);
-        if pick_over && is_mouse_button_pressed(MouseButton::Left) && active.is_none() {
-            picking = true;
-            saved_picker = Some(picker);
-            screen::start_pick();
-            screen::overlay_show();
-            macroquad::miniquad::window::set_mouse_cursor(
-                macroquad::miniquad::CursorIcon::Crosshair, ); }
-
-        if is_key_pressed(KeyCode::C) && !editing { println!("rgba({}, {}, {}, {})  #{:02X}{:02X}{:02X}{:02X}", r, g, b, a8, r, g, b, a8); }
+        // remember the color, mode and pin for next launch (once the mouse is let go)
+        let state = Saved { mode, rgba: (r, g, b, a8), on_top };
+        if state != persisted && !picking && !is_mouse_button_down(MouseButton::Left) {
+            persisted = state;
+            save_state(&state);
+        }
 
         set_default_camera();
-        draw_rectangle(0.0, 0.0, sw, TITLE_BAR_H, BG);
-        draw_text(TITLE_TEXT, 12.0, TITLE_BAR_H - 9.0, 15.0, UI_TEXT);
-
-
-        let (raw_mx, raw_my) = mouse_position();
-        let raw_m = if screen::mouse_in_window() {
-            Vec2::new(raw_mx, raw_my) } else {
-            Vec2::new(-1.0e6, -1.0e6) };
-        let btn_ok = !picking && !was_picking && !editing && !dd_open;
-        let maxed = screen::is_maximized();
-        let btns = [(sw - 3.0 * TITLE_BTN_W, 0u8), (sw - 2.0 * TITLE_BTN_W, 1u8), (sw - TITLE_BTN_W, 2u8), ];
-        for (bx, kind) in btns {
-            let rect = Rect::new(bx, 0.0, TITLE_BTN_W, TITLE_BAR_H);
-            let hov = btn_ok && hit(rect, raw_m, 0.0);
-            let (bg, icon) = if hov {
-                if kind == 2 {
-                    (Color::from_rgba(196, 43, 28, 255), UI_TEXT) } else {
-                    (Color::from_rgba(255, 255, 255, 26), UI_TEXT) } } else {
-                (Color::from_rgba(0, 0, 0, 0), UI_TEXT) };
-            if hov { draw_rectangle(rect.x, rect.y, rect.w, rect.h, bg); }
-            let mx2 = rect.x + rect.w * 0.5;
-            let my2 = TITLE_BAR_H * 0.5;
-            match kind {
-                0 => draw_rectangle(mx2 - 5.0, my2, 10.0, 1.0, icon),
-                1 => {
-                    if maxed {
-                        draw_rectangle_lines(mx2 - 1.0, my2 - 5.0, 8.0, 8.0, 1.0, icon);
-                        draw_rectangle(mx2 - 5.0, my2 - 2.0, 8.0, 8.0, TITLE_BG);
-                        draw_rectangle_lines(mx2 - 5.0, my2 - 2.0, 8.0, 8.0, 1.0, icon); } else {
-                        draw_rectangle_lines(mx2 - 4.5, my2 - 4.5, 9.0, 9.0, 1.0, icon); } }
-                _ => {
-                    draw_line(mx2 - 4.0, my2 - 4.0, mx2 + 4.0, my2 + 4.0, 1.0, icon);
-                    draw_line(mx2 + 4.0, my2 - 4.0, mx2 - 4.0, my2 + 4.0, 1.0, icon); } }
-            if hov && is_mouse_button_pressed(MouseButton::Left) {
-                match kind {
-                    0 => screen::minimize_window(),
-                    1 => screen::toggle_maximize_window(),
-                    _ => screen::close_window(), } } }
-        draw_text("v1.0.0",screen_width() / 100.,screen_height() -5.,10.,Color::from_rgba(0,0,0,102));
         next_frame().await;
         let budget = 1.0 / refresh_hz;
         let spent = get_time() - frame_start;
