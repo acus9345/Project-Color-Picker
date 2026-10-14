@@ -7,7 +7,8 @@ its the ai redesigned version of my original color picker ofc its much better fo
 ## how to use
 
 well for window x64 just open the target/debug/too1.exe
-for any other system use   cargo clean + cargo run
+for linux use   cargo clean + cargo run
+for mac user read the macos file
 
 ## controls
 (idk yea this part is ai idk why claude added this)
