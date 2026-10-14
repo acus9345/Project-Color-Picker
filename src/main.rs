@@ -1433,8 +1433,21 @@ fn exe_dir()-> std::path::PathBuf{
         .and_then(|p|p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(||std::path::PathBuf::from(".")) }
 
+/// Where palette.txt / state.txt live: next to the exe, except on macOS, where
+/// an .app bundle may be read-only, so they go in Application Support.
+fn data_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        let dir = std::path::PathBuf::from(home).join("Library/Application Support/Project Color Picker");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            return dir;
+        }
+    }
+    exe_dir()
+}
+
 fn swatch_path() -> std::path::PathBuf {
-    exe_dir().join("palette.txt") }
+    data_dir().join("palette.txt") }
 
 /// How many colors can be saved, and how many of them show at once.
 const SWATCH_SLOTS: usize = 100;
@@ -1465,7 +1478,7 @@ fn save_swatches(sw: &[Option<(u8, u8, u8, u8)>; SWATCH_SLOTS]) {
 }
 
 fn state_path() -> std::path::PathBuf {
-    exe_dir().join("state.txt")
+    data_dir().join("state.txt")
 }
 
 /// What the app reopens with: mode, color and the always-on-top pin.
@@ -1779,6 +1792,13 @@ mod screen {
     const SW_RESTORE:i32 =9;
 
     pub const CAPTURE_N:i32 =31;
+    /// the app draws its own title bar and window buttons
+    pub const CUSTOM_FRAME: bool = true;
+    /// Pick Screen works here
+    pub const CAN_PICK: bool = true;
+    /// picking is done by the OS's own sampler (see `sampler_result`)
+    pub const SYSTEM_SAMPLER: bool = false;
+    pub fn sampler_result() -> Option<Option<(u8, u8, u8)>> { None }
     const OCELL:i32 =8;
     const OL_N:i32 =CAPTURE_N;
     const OLOUPE:i32 =OL_N *OCELL;
@@ -2700,9 +2720,122 @@ mod screen {
                 out.swap(i, i + 2);
                 out[i + 3] = 255; }out }) } }
 //shhhh u would never know
-#[cfg(not(target_os = "windows"))]
+// ---------- macOS: native title bar, the system color sampler, window level ----------
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)] // objc 0.2's msg_send! checks an old clippy cfg
+mod screen {
+    use block::ConcreteBlock;
+    use objc::runtime::{Class, Object};
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicPtr, Ordering};
+
+    pub const CAPTURE_N: i32 = 31;
+    pub const CUSTOM_FRAME: bool = false;
+    pub const CAN_PICK: bool = true;
+    pub const SYSTEM_SAMPLER: bool = true;
+
+    /// What the sampler handed back: Some(Some(rgb)) picked, Some(None) cancelled.
+    static RESULT: Mutex<Option<Option<(u8, u8, u8)>>> = Mutex::new(None);
+    /// The open NSColorSampler, released once it has answered.
+    static SAMPLER: AtomicPtr<Object> = AtomicPtr::new(std::ptr::null_mut());
+
+    fn q(v: f64) -> u8 {
+        (v.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    /// Opens macOS's own eyedropper (NSColorSampler, macOS 10.15+): it brings
+    /// its magnifier, handles the click and Esc, and needs no screen-recording
+    /// permission.
+    pub fn start_pick() {
+        *RESULT.lock().unwrap() = None;
+        let Some(cls) = Class::get("NSColorSampler") else {
+            *RESULT.lock().unwrap() = Some(None); // older macOS: nothing to show
+            return;
+        };
+        unsafe {
+            let sampler: *mut Object = msg_send![cls, new];
+            SAMPLER.store(sampler, Ordering::SeqCst);
+            let handler = ConcreteBlock::new(|color: *mut Object| {
+                let picked = if color.is_null() {
+                    None
+                } else {
+                    let srgb: *mut Object = msg_send![class!(NSColorSpace), sRGBColorSpace];
+                    let c: *mut Object = msg_send![color, colorUsingColorSpace: srgb];
+                    if c.is_null() {
+                        None
+                    } else {
+                        let r: f64 = msg_send![c, redComponent];
+                        let g: f64 = msg_send![c, greenComponent];
+                        let b: f64 = msg_send![c, blueComponent];
+                        Some((q(r), q(g), q(b)))
+                    }
+                };
+                *RESULT.lock().unwrap() = Some(picked);
+            })
+            .copy();
+            let _: () = msg_send![sampler, showSamplerWithSelectionHandler: &*handler];
+        }
+    }
+
+    pub fn sampler_result() -> Option<Option<(u8, u8, u8)>> {
+        let res = RESULT.lock().unwrap().take();
+        if res.is_some() {
+            let s = SAMPLER.swap(std::ptr::null_mut(), Ordering::SeqCst);
+            if !s.is_null() {
+                unsafe { let _: () = msg_send![s, release]; }
+            }
+        }
+        res
+    }
+
+    /// Float the app's windows above others (NSFloatingWindowLevel = 3).
+    pub fn set_topmost(on: bool) {
+        unsafe {
+            let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+            let windows: *mut Object = msg_send![app, windows];
+            let count: usize = msg_send![windows, count];
+            for i in 0..count {
+                let w: *mut Object = msg_send![windows, objectAtIndex: i];
+                let level: isize = if on { 3 } else { 0 };
+                let _: () = msg_send![w, setLevel: level];
+            }
+        }
+    }
+
+    pub fn stop_pick() {}
+    pub fn take_click() -> Option<(i32, i32)> { None }
+    pub fn set_window_icons() -> bool { true }
+    pub fn apply_win11_style(_caption_bgr: u32) -> bool { true }
+    pub fn dpi_scale() -> f32 { 1.0 }
+    pub fn enable_custom_frame(_cap: i32, _lh: i32, _zone: i32) -> bool { true }
+    pub fn set_window_px(_w: i32, _h: i32) {}
+    pub fn frame_tick(_cap: i32, _lh: i32, _zone: i32) {}
+    pub fn mouse_in_window() -> bool { true }
+    pub fn monitor_refresh_hz() -> u32 { 120 }
+    pub fn set_high_res_timer() {}
+    pub fn minimize_window() {}
+    pub fn toggle_maximize_window() {}
+    pub fn is_maximized() -> bool { false }
+    pub fn close_window() {}
+    pub fn overlay_show() {}
+    pub fn overlay_hide() {}
+    pub fn overlay_update(_px: &[u8], _r: u8, _g: u8, _b: u8, _x: i32, _y: i32) {}
+    pub fn cursor() -> (i32, i32) { (0, 0) }
+    pub fn set_cursor(_x: i32, _y: i32) {}
+    pub fn region(_cx: i32, _cy: i32, w: i32, h: i32) -> Vec<u8> {
+        vec![0u8; (w * h * 4) as usize]
+    }
+}
+
+// ---------- anything else (Linux, ...): the picker without screen picking ----------
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod screen {
     pub const CAPTURE_N: i32 = 31;
+    pub const CUSTOM_FRAME: bool = false;
+    pub const CAN_PICK: bool = false;
+    pub const SYSTEM_SAMPLER: bool = false;
+    pub fn sampler_result() -> Option<Option<(u8, u8, u8)>> { None }
     pub fn start_pick() {}
     pub fn stop_pick() {}
     pub fn take_click() -> Option<(i32, i32)> { None }
@@ -3617,7 +3750,8 @@ async fn main() {
             Vec2::new(-1.0e6, -1.0e6)
         };
         let pressed = is_mouse_button_pressed(MouseButton::Left);
-        let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
+        let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl)
+            || is_key_down(KeyCode::LeftSuper) || is_key_down(KeyCode::RightSuper); // Cmd on macOS
         let mut cursor = CursorIcon::Default;
         let mut tip: Option<(&'static str, Rect)> = None;
 
@@ -3647,7 +3781,24 @@ async fn main() {
 
         // ------- screen-pick mode ----------(alr)
         let was_picking = picking;
-        if picking {
+        if picking && screen::SYSTEM_SAMPLER {
+            // the OS sampler runs the pick on its own; poll for its answer
+            match screen::sampler_result() {
+                Some(Some((pr, pg, pb))) => {
+                    picker.sync_hsv(pr, pg, pb);
+                    clipboard_set(&format!("#{:02X}{:02X}{:02X}", pr, pg, pb));
+                    copied = (2, now);
+                    picking = false;
+                }
+                Some(None) => {
+                    if let Some(p) = saved_picker {
+                        picker = p;
+                    }
+                    picking = false;
+                }
+                None => {}
+            }
+        } else if picking {
             let (mut gx, mut gy) = screen::cursor();
             if now - last_nudge > 0.05 {
                 let (nx, ny) = (gx, gy);
@@ -3743,7 +3894,7 @@ async fn main() {
                 } else if ctrl && is_key_pressed(KeyCode::V) {
                     let ok = clipboard_get().is_some_and(|clip| apply_text(mode, &clip, &mut picker));
                     if !ok { bad_at = now; }
-                } else if !ctrl && is_key_pressed(KeyCode::P) {
+                } else if !ctrl && screen::CAN_PICK && is_key_pressed(KeyCode::P) {
                     dd_open = false;
                     picking = true;
                     start_pick(&picker, &mut saved_picker);
@@ -4160,10 +4311,16 @@ async fn main() {
 
         // ---------- screen pick button ----------
         let pick_hot = free && hit(pick_btn, m, 0.0);
-        ui.button(pick_btn, pick_hot);
+        if screen::CAN_PICK {
+            ui.button(pick_btn, pick_hot);
+        } else {
+            ui.fill(pick_btn, 5.0, SURFACE);
+        }
         ui.label("Pick Screen", pick_btn.x + pick_btn.w * 0.5, pick_btn.y + pick_btn.h * 0.5, 11.5, true,
-                 Color::from_rgba(12, 12, 13, 255), 0.5);
-        if pick_hot {
+                 if screen::CAN_PICK { Color::from_rgba(12, 12, 13, 255) } else { TEXT_DIM }, 0.5);
+        if pick_hot && !screen::CAN_PICK {
+            tip = Some(("Screen picking isn't available on this system", pick_btn));
+        } else if pick_hot {
             tip = Some(("Pick a color from anywhere on screen  (P)", pick_btn));
             if pressed && active.is_none() {
                 picking = true;
@@ -4370,15 +4527,23 @@ async fn main() {
         draw_rectangle(0.0, 0.0, vw, TITLE_H, BG);
         ui.hairline(0.0, TITLE_H, vw, 0.0, STROKE);
         let title_cy = TITLE_H * 0.5;
-        draw_texture_ex(&icon_tex, 8.0, title_cy - 9.0, WHITE,
-                        DrawTextureParams { dest_size: Some(vec2(18.0, 18.0)), ..Default::default() });
-        ui.label(TITLE_TEXT, 32.0, title_cy, 12.0, true, TEXT, 0.0);
-        let title_w = ui.width(TITLE_TEXT, 12.0, true);
-        ui.label("v1.0.1-ai-redesigned-edition", 32.0 + title_w + 8.0, title_cy, 11.0, false, with_alpha(TEXT_DIM, 0.7), 0.0);
+        let version = "v1.0.1-ai-redesigned-edition";
+        if screen::CUSTOM_FRAME {
+            draw_texture_ex(&icon_tex, 8.0, title_cy - 9.0, WHITE,
+                            DrawTextureParams { dest_size: Some(vec2(18.0, 18.0)), ..Default::default() });
+            ui.label(TITLE_TEXT, 32.0, title_cy, 12.0, true, TEXT, 0.0);
+            let title_w = ui.width(TITLE_TEXT, 12.0, true);
+            ui.label(version, 32.0 + title_w + 8.0, title_cy, 11.0, false, with_alpha(TEXT_DIM, 0.7), 0.0);
+        } else {
+            // the system title bar above already shows the name
+            ui.label(version, 14.0, title_cy, 11.0, false, with_alpha(TEXT_DIM, 0.7), 0.0);
+        }
 
         let maxed = screen::is_maximized();
-        for kind in 0..5u8 {
-            let rect = Rect::new(vw - (5 - kind) as f32 * TITLE_BTN_W, 0.0, TITLE_BTN_W, TITLE_H);
+        // dim, pin, then (with our own frame) minimize, maximize, close
+        let buttons: u8 = if screen::CUSTOM_FRAME { 5 } else { 2 };
+        for kind in 0..buttons {
+            let rect = Rect::new(vw - (buttons - kind) as f32 * TITLE_BTN_W, 0.0, TITLE_BTN_W, TITLE_H);
             let hov = !was_picking && !picking && hit(rect, m, 0.0);
             let c = vec2(rect.x + rect.w * 0.5, title_cy);
             if hov {
