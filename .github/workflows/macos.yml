@@ -1,4 +1,5 @@
-# Builds the macOS app on a real Mac, launches it, and keeps screenshots + the .app.
+# Builds the macOS app on real Macs (Apple Silicon and Intel), launches it,
+# and keeps screenshots + the finished .app.
 name: macOS build
 
 on:
@@ -8,7 +9,11 @@ on:
 
 jobs:
   app:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -18,23 +23,32 @@ jobs:
       - name: Launch it and take screenshots
         run: |
           mkdir -p shots
-          PCP_SMOKE_DIR="$PWD/shots" "dist/Project Color Picker.app/Contents/MacOS/tool1" &
+          set +e
+          PCP_SMOKE_DIR="$PWD/shots" "dist/Project Color Picker.app/Contents/MacOS/tool1" > launch.log 2>&1 &
           pid=$!
           for i in $(seq 90); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
-          if kill -0 "$pid" 2>/dev/null; then kill "$pid"; echo "the app did not finish in time"; exit 1; fi
-          wait "$pid"
+          if kill -0 "$pid" 2>/dev/null; then kill "$pid"; cat launch.log; echo "the app did not finish in time"; exit 1; fi
+          wait "$pid"; status=$?
+          cat launch.log
+          if [ $status -ne 0 ] && grep -q "glpixelformat_obj.is_null" launch.log; then
+            # CI Macs are VMs without a GPU, so no OpenGL window can open there
+            echo "::warning::This runner has no GPU, so the app can't open a window here; launch test skipped"
+            exit 0
+          fi
           ls -l shots
+          exit $status
 
       - name: Zip the app
         run: ditto -c -k --keepParent "dist/Project Color Picker.app" dist/Project-Color-Picker-macOS.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Project-Color-Picker-macOS
+          name: Project-Color-Picker-macOS-${{ matrix.runner }}
           path: dist/Project-Color-Picker-macOS.zip
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: screenshots
+          name: screenshots-${{ matrix.runner }}
           path: shots/
+          if-no-files-found: ignore
