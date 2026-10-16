@@ -3701,6 +3701,10 @@ async fn main() {
     let mut last_key = [i64::MIN; 39];
     screen::set_high_res_timer();
     let refresh_hz = screen::monitor_refresh_hz().max(30) as f64;
+    // smoke test (used by .github/workflows/macos.yml): with PCP_SMOKE_DIR set,
+    // the app shows a few modes, saves a screenshot of each there, and quits
+    let smoke_dir = std::env::var_os("PCP_SMOKE_DIR").map(std::path::PathBuf::from);
+    let mut smoke_step = 0usize;
     loop {
         let frame_start = get_time();
         let now = frame_start;
@@ -4643,6 +4647,23 @@ async fn main() {
         if state != persisted && !picking && !is_mouse_button_down(MouseButton::Left) {
             persisted = state;
             save_state(&state);
+        }
+
+        if let Some(dir) = &smoke_dir {
+            const SHOTS: [ColorMode; 5] =
+                [ColorMode::Rgba, ColorMode::Lab, ColorMode::Yuv, ColorMode::Munsell, ColorMode::Cmyk];
+            if get_time() > 2.0 + smoke_step as f64 {
+                if smoke_step > 0 {
+                    let file = dir.join(format!("{}.png", mode_name(SHOTS[smoke_step - 1])));
+                    get_screen_data().export_png(&file.to_string_lossy());
+                }
+                if smoke_step == SHOTS.len() {
+                    println!("smoke test ok: {} screenshots, system font: {}", SHOTS.len(), ui.font.is_some());
+                    break;
+                }
+                mode = SHOTS[smoke_step];
+                smoke_step += 1;
+            }
         }
 
         set_default_camera();

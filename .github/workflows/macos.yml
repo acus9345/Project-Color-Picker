@@ -1,0 +1,40 @@
+# Builds the macOS app on a real Mac, launches it, and keeps screenshots + the .app.
+name: macOS build
+
+on:
+  push:
+    branches: [ai-redesigned, master]
+  workflow_dispatch:
+
+jobs:
+  app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the .app
+        run: bash macos/build-app.sh
+
+      - name: Launch it and take screenshots
+        run: |
+          mkdir -p shots
+          PCP_SMOKE_DIR="$PWD/shots" "dist/Project Color Picker.app/Contents/MacOS/tool1" &
+          pid=$!
+          for i in $(seq 90); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          if kill -0 "$pid" 2>/dev/null; then kill "$pid"; echo "the app did not finish in time"; exit 1; fi
+          wait "$pid"
+          ls -l shots
+
+      - name: Zip the app
+        run: ditto -c -k --keepParent "dist/Project Color Picker.app" dist/Project-Color-Picker-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Project-Color-Picker-macOS
+          path: dist/Project-Color-Picker-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: shots/
