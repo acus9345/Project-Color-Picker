@@ -2,6 +2,7 @@
 
 its a useless color picker that incudes 14 color modes(its only useful when u dont wanna open ur browser everytime)
 its the ai redesigned version of my original color picker ofc its much better for me now cuz ai is much better at this
+(the original version of my code is in master branch)
 - **modes included** - RGBA,HEX,HSL,HSB,CMYK,HWB,OKLCH,LAB,GRAY,YUV,YPBPR,XYZ,XYYMUNSELL
 
 ## how to use
