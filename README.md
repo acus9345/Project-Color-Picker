@@ -9,9 +9,9 @@ its the ai redesigned version of my original color picker ofc its much better fo
 
 ## how to use
 
-well for window x64 just open the target/debug/too1.exe
+download it from [releases](https://github.com/acus9345/Project-Color-Picker/releases/latest) (windows x64, mac apple silicon, mac intel)
 for linux use   cargo clean + cargo run
-for mac user read the macos file
+for mac user read the macos file if u wanna build it urself
 
 ## controls
 (idk yea this part is ai idk why claude added this)
